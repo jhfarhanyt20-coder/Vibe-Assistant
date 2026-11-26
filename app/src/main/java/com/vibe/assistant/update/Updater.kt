@@ -46,6 +46,16 @@ object Updater {
     val status = MutableStateFlow("")
     val available = MutableStateFlow<Release?>(null)
 
+    enum class Stage { IDLE, DOWNLOADING, READY, FAILED }
+
+    /** Where the update is, for the card on the home screen. */
+    val stage = MutableStateFlow(Stage.IDLE)
+    /** 0..100 while downloading. */
+    val progress = MutableStateFlow(0)
+
+    /** The download the installer was already opened for — never twice for one file. */
+    @Volatile private var offeredFor = -1L
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     fun currentVersion(ctx: Context): String = try {
@@ -114,10 +124,19 @@ object Updater {
         }
     }
 
-    /** Quiet background check (app opened, service started), at most every few hours. */
-    fun autoCheck(ctx: Context) {
+    /**
+     * Quiet check. When the app is opened ([onOpen]) it looks every time (at most
+     * once a minute) so a new version shows up at once; from the background service
+     * only every few hours.
+     */
+    fun autoCheck(ctx: Context, onOpen: Boolean = false) {
         if (!Prefs.autoUpdate) return
-        if (System.currentTimeMillis() - Prefs.lastUpdateCheck < CHECK_EVERY_MS) return
+        val since = System.currentTimeMillis() - Prefs.lastUpdateCheck
+        if (since < (if (onOpen) 60_000L else CHECK_EVERY_MS)) {
+            // Nothing new to ask GitHub, but a finished download may still be waiting to install.
+            if (onOpen) resume(ctx.applicationContext)
+            return
+        }
         val app = ctx.applicationContext
         scope.launch {
             try {
@@ -125,16 +144,17 @@ object Updater {
                 Prefs.lastUpdateCheck = System.currentTimeMillis()
                 if (rel != null && isNewer(rel.version, currentVersion(app))) {
                     available.value = rel
-                    // Already downloading / downloaded this version? Then just offer to install.
+                    // Already downloading / downloaded this version? Then just follow it / offer to install.
                     if (Prefs.updateVersion == rel.version && Prefs.updateDownloadId >= 0 &&
                         downloadStatus(app, Prefs.updateDownloadId) != DownloadManager.STATUS_FAILED
                     ) {
-                        if (downloadStatus(app, Prefs.updateDownloadId) == DownloadManager.STATUS_SUCCESSFUL) {
-                            withContext(Dispatchers.Main) { install(app, Prefs.updateDownloadId) }
-                        }
+                        resume(app)
                         return@launch
                     }
                     download(app, rel)
+                } else if (rel != null) {
+                    available.value = null
+                    stage.value = Stage.IDLE
                 }
             } catch (_: Exception) {}
         }
@@ -163,10 +183,83 @@ object Updater {
         Prefs.updateDownloadId = id
         Prefs.updateVersion = rel.version
         status.value = "নতুন ভার্সন ${rel.version} নামছে (Download ফোল্ডারে)…"
+        watch(ctx.applicationContext, id)
+    }
+
+    /** Picks up a download already in progress / finished (e.g. after the app was closed). */
+    private fun resume(ctx: Context) {
+        val id = Prefs.updateDownloadId
+        if (id < 0 || !isNewer(Prefs.updateVersion, currentVersion(ctx))) return
+        when (downloadStatus(ctx, id)) {
+            DownloadManager.STATUS_SUCCESSFUL -> {
+                stage.value = Stage.READY
+                progress.value = 100
+            }
+            DownloadManager.STATUS_FAILED -> Unit
+            else -> watch(ctx, id)
+        }
+    }
+
+    private var watching = -1L
+
+    /** Follows the download's progress for the home-screen card; opens the installer when it is done. */
+    private fun watch(ctx: Context, id: Long) {
+        if (watching == id) return
+        watching = id
+        stage.value = Stage.DOWNLOADING
+        progress.value = 0
+        scope.launch {
+            val dm = ctx.getSystemService(DownloadManager::class.java)
+            while (true) {
+                var st = DownloadManager.STATUS_FAILED
+                dm.query(DownloadManager.Query().setFilterById(id))?.use { c ->
+                    if (c.moveToFirst()) {
+                        st = c.getInt(c.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
+                        val done = c.getLong(c.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR))
+                        val total = c.getLong(c.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES))
+                        if (total > 0) progress.value = ((done * 100) / total).toInt().coerceIn(0, 100)
+                    }
+                }
+                when (st) {
+                    DownloadManager.STATUS_SUCCESSFUL -> {
+                        progress.value = 100
+                        stage.value = Stage.READY
+                        withContext(Dispatchers.Main) { install(ctx, id) }
+                        break
+                    }
+                    DownloadManager.STATUS_FAILED -> {
+                        stage.value = Stage.FAILED
+                        status.value = "আপডেট নামানো যায়নি — ইন্টারনেট দেখে আবার চেষ্টা করো"
+                        break
+                    }
+                }
+                kotlinx.coroutines.delay(500)
+            }
+            watching = -1L
+        }
+    }
+
+    /** "Install" button: open the installer for the downloaded file again. */
+    fun installNow(ctx: Context) {
+        val id = Prefs.updateDownloadId
+        if (id >= 0) {
+            offeredFor = -1L
+            install(ctx.applicationContext, id)
+        }
+    }
+
+    fun canInstall(ctx: Context) = ctx.packageManager.canRequestPackageInstalls()
+
+    fun openInstallPermission(ctx: Context) {
+        DeviceActions.launch(ctx, Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${ctx.packageName}")))
     }
 
     /** Opens the system installer for a finished download. */
     fun install(ctx: Context, id: Long) {
+        // The download-complete broadcast and the progress watcher both arrive here: open the installer once.
+        if (offeredFor == id) return
+        offeredFor = id
+        stage.value = Stage.READY
         val dm = ctx.getSystemService(DownloadManager::class.java)
         val uri = dm.getUriForDownloadedFile(id) ?: run {
             status.value = "নামানো ফাইল পাওয়া যায়নি — আবার চেষ্টা করো"

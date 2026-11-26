@@ -29,6 +29,7 @@ import com.vibe.assistant.core.VibeBus
 import com.vibe.assistant.data.KeyChecker
 import com.vibe.assistant.data.Prefs
 import com.vibe.assistant.service.VibeService
+import com.vibe.assistant.update.Updater
 import com.vibe.assistant.wake.WakeModelDownloader
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.combine
@@ -64,6 +65,10 @@ class MainActivity : ComponentActivity() {
     private lateinit var transcriptBox: LinearLayout
     private lateinit var checklist: LinearLayout
     private lateinit var tCard: LinearLayout
+    private lateinit var updateCard: LinearLayout
+    private lateinit var updateText: TextView
+    private lateinit var updateBar: android.widget.ProgressBar
+    private lateinit var updateButton: TextView
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -75,7 +80,8 @@ class MainActivity : ComponentActivity() {
         if (Prefs.apiKey == null) return
         if (!homeShown) showHome()
         startBackground()
-        com.vibe.assistant.update.Updater.autoCheck(this)
+        com.vibe.assistant.update.Updater.autoCheck(this, onOpen = true)
+        if (::updateCard.isInitialized) renderUpdate()
         // "Hey Vibe" is on by default: fetch its offline model in the background the
         // first time, with no prompt. Progress shows under the orb.
         if (Prefs.wakeEnabled && Flows.hasMic(this) &&
@@ -258,6 +264,19 @@ class MainActivity : ComponentActivity() {
         root.addView(chips, lp().margins(l = dp(16), t = dp(12), r = dp(16)))
 
         // What is still missing
+        // Update card: the new version downloads inside the app, then the installer opens.
+        updateCard = card().apply { visibility = View.GONE }
+        updateText = label("", 14.5f, VC.TEXT, VC.medium)
+        updateCard.addView(updateText)
+        updateBar = android.widget.ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            max = 100
+            progressTintList = android.content.res.ColorStateList.valueOf(VC.A2)
+        }
+        updateCard.addView(updateBar, lp().margins(t = dp(8)))
+        updateButton = smallButton("") {}
+        updateCard.addView(updateButton, lp(ViewGroup.LayoutParams.WRAP_CONTENT).margins(t = dp(10)))
+        root.addView(updateCard, lp().margins(l = dp(16), t = dp(12), r = dp(16)))
+
         checklist = card().apply { visibility = View.GONE }
         root.addView(checklist, lp().margins(l = dp(16), t = dp(12), r = dp(16)))
 
@@ -284,6 +303,12 @@ class MainActivity : ComponentActivity() {
                         .collect { a -> render(a[0] as VState, a[1] as String, a[2] as Int, a[3] as String?) }
                 }
                 launch { VibeBus.lines.collect { renderLines(it) } }
+                launch {
+                    combine(
+                        com.vibe.assistant.update.Updater.stage,
+                        com.vibe.assistant.update.Updater.progress,
+                    ) { _, _ -> }.collect { renderUpdate() }
+                }
                 launch {
                     VibeBus.pttHeld.collect {
                         render(
@@ -342,6 +367,47 @@ class MainActivity : ComponentActivity() {
             for (l in lines) transcriptBox.addView(lineView(l), lp().margins(b = dp(8)))
         }
         transcriptScroll.post { transcriptScroll.fullScroll(View.FOCUS_DOWN) }
+    }
+
+    private fun renderUpdate() {
+        val U = com.vibe.assistant.update.Updater
+        val ver = Prefs.updateVersion
+        val newer = ver.isNotBlank() && U.isNewer(ver, U.currentVersion(this))
+        val st = U.stage.value
+        if (!newer || st == Updater.Stage.IDLE) {
+            updateCard.visibility = View.GONE
+            return
+        }
+        updateCard.visibility = View.VISIBLE
+        when (st) {
+            Updater.Stage.DOWNLOADING -> {
+                updateText.text = "নতুন ভার্সন $ver নামছে… ${U.progress.value}%"
+                updateBar.visibility = View.VISIBLE
+                updateBar.progress = U.progress.value
+                updateButton.visibility = View.GONE
+            }
+            Updater.Stage.READY -> {
+                updateBar.visibility = View.GONE
+                updateButton.visibility = View.VISIBLE
+                if (!U.canInstall(this)) {
+                    updateText.text = "ভার্সন $ver নামানো শেষ। install করতে একবার অনুমতি দাও।"
+                    updateButton.text = "অনুমতি দাও"
+                    updateButton.setOnClickListener { U.openInstallPermission(this) }
+                } else {
+                    updateText.text = "ভার্সন $ver নামানো শেষ (Download ফোল্ডারে)।"
+                    updateButton.text = "এখনই install করো"
+                    updateButton.setOnClickListener { U.installNow(this) }
+                }
+            }
+            Updater.Stage.FAILED -> {
+                updateText.text = "আপডেট নামানো যায়নি।"
+                updateBar.visibility = View.GONE
+                updateButton.visibility = View.VISIBLE
+                updateButton.text = "আবার চেষ্টা করো"
+                updateButton.setOnClickListener { U.checkNow(this) }
+            }
+            else -> updateCard.visibility = View.GONE
+        }
     }
 
     private fun lineView(l: Line): LinearLayout = LinearLayout(this).apply {
