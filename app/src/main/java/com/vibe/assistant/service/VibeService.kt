@@ -372,7 +372,11 @@ class VibeService : Service(), GeminiLiveClient.Listener, ToolRunner.Host {
 
         // Turn-taking mode for this conversation.
         gate = null
-        val wantGate = !Prefs.pushToTalk && Prefs.voiceStrict && VoiceId.canGate(this)
+        // Checking every sentence's voice during the conversation was removed: it
+        // too often took the owner's own speech for someone else's and Vibe went
+        // silent. Voice Lock now guards only the wake word (and voice unlock);
+        // Push-to-talk is the way to keep other people out of a conversation.
+        val wantGate = false
         manual = Prefs.pushToTalk || wantGate
         if (wantGate) {
             val owner = Prefs.ownerVoice!!
@@ -485,6 +489,7 @@ class VibeService : Service(), GeminiLiveClient.Listener, ToolRunner.Host {
     private fun onOwnerUtterance(chunks: List<ByteArray>) {
         if (chunks.isEmpty()) return
         lastActivity = SystemClock.elapsedRealtime()
+        VibeBus.ownerVerifiedAt = lastActivity
         val c = client
         synchronized(pending) {
             if (ready && c != null) sendUtterance(c, chunks)
@@ -895,12 +900,29 @@ class VibeService : Service(), GeminiLiveClient.Listener, ToolRunner.Host {
 
     override fun isLocked(): Boolean = getSystemService(KeyguardManager::class.java).isKeyguardLocked
 
+    /**
+     * Voice unlock is allowed only when every lock is in place: the user turned it
+     * on, saved a PIN, enrolled their voice, and Voice Lock recognised that voice
+     * in the last 45 seconds. The PIN never goes to Gemini — it is typed from the
+     * phone's own encrypted storage.
+     */
+    override fun canVoiceUnlock(): Boolean = false // needs voice identification, which was removed
+
     override suspend fun ensureUnlocked(): Boolean {
         val km = getSystemService(KeyguardManager::class.java)
         if (!km.isKeyguardLocked) return true
+        val byVoice = canVoiceUnlock()
         withContext(Dispatchers.Main) {
             showLockUi(force = true)
             VibeBus.unlockRequestAt.value = SystemClock.elapsedRealtime()
+        }
+        if (byVoice) {
+            val pin = Prefs.unlockPin
+            val acc = VibeAccessibility.instance
+            if (pin != null && acc != null) {
+                VibeBus.event("তোমার কণ্ঠ মিলেছে — PIN দিয়ে আনলক করছি")
+                if (!acc.typePin(pin)) VibeBus.event("PIN-এর বোতাম পাওয়া যায়নি — নিজে আনলক করো")
+            }
         }
         repeat(60) {
             delay(500)
@@ -931,6 +953,30 @@ class VibeService : Service(), GeminiLiveClient.Listener, ToolRunner.Host {
     }
 
     override fun ringingNumber(): String? = if (ringing) (ringNumber ?: "unknown") else null
+
+    override fun sendImageToLive(jpegB64: String): Boolean = client?.sendImage(jpegB64) == true
+
+    override fun releaseAudioThen(action: () -> Unit) {
+        main.post {
+            val start = SystemClock.elapsedRealtime()
+            val waiter = object : Runnable {
+                override fun run() {
+                    val speaking = speaker?.isSpeaking() == true
+                    val waited = SystemClock.elapsedRealtime() - start
+                    // Give Vibe ~1 s to start its short line, then let it finish (max 5 s).
+                    if (inConversation && (waited < 1000 || (speaking && waited < 5000))) {
+                        main.postDelayed(this, 200)
+                        return
+                    }
+                    endConversation(resumeWake = false)
+                    main.postDelayed({
+                        try { action() } catch (e: Exception) { Log.w(TAG, "after-release action failed", e) }
+                    }, 300)
+                }
+            }
+            main.postDelayed(waiter, 200)
+        }
+    }
 
     // ── Lock screen ──────────────────────────────────────────────────────────
 

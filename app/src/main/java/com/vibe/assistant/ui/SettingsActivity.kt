@@ -45,8 +45,6 @@ class SettingsActivity : ComponentActivity() {
     private lateinit var modelList: LinearLayout
     private lateinit var permList: LinearLayout
     private lateinit var modeList: LinearLayout
-    private lateinit var lockInfo: TextView
-    private lateinit var lockButton: TextView
     private lateinit var memoryList: LinearLayout
     private lateinit var memoryTitle: TextView
     private lateinit var logText: TextView
@@ -131,42 +129,6 @@ class SettingsActivity : ComponentActivity() {
                 { Prefs.bargeIn }
             ) { Prefs.bargeIn = it })
         }, lp().margins(t = dp(8)))
-
-        // ── Voice Lock ──
-        col.addView(section("Voice Lock — শুধু আমার কণ্ঠ"))
-        col.addView(card().apply {
-            lockInfo = label("", 14.5f, VC.TEXT)
-            addView(lockInfo)
-            lockButton = secondaryButton("") {
-                startActivity(Intent(this@SettingsActivity, VoiceEnrollActivity::class.java))
-            }
-            addView(lockButton, lp().margins(t = dp(12)))
-            addView(divider())
-            addView(switchRow(
-                "Voice Lock চালু",
-                "“হেই Vibe” শুধু তোমার কণ্ঠে কাজ করবে",
-                { Prefs.voiceLock && Prefs.ownerVoice != null }
-            ) { on ->
-                if (on && Prefs.ownerVoice == null) {
-                    startActivity(Intent(this@SettingsActivity, VoiceEnrollActivity::class.java))
-                } else {
-                    Prefs.voiceLock = on
-                    VibeService.send(this@SettingsActivity, VibeService.A_ENSURE)
-                }
-            })
-            addView(divider())
-            addView(switchRow(
-                "কথোপকথনেও শুধু আমার কণ্ঠ",
-                "অন্য কারো কথা Gemini পর্যন্ত যাবেই না। এতে তুমি থামার প্রায় আধা সেকেন্ড পরে Vibe শোনে। Push-to-talk-এ এটা লাগে না।",
-                { Prefs.voiceStrict }
-            ) { Prefs.voiceStrict = it })
-            addView(divider())
-            addView(label("কতটা কড়া হবে", 15.5f, VC.TEXT, VC.medium), lp().margins(t = dp(10)))
-            addView(choiceRow(listOf(0 to "সহজ", 1 to "মাঝারি", 2 to "কড়া"), { Prefs.voiceLevel }) { Prefs.voiceLevel = it },
-                lp().margins(t = dp(8)))
-            addView(label("তোমাকেই বারবার চিনতে না পারলে “সহজ” করো; অন্য কেউ চালাতে পারলে “কড়া”।", 12.5f, VC.FAINT),
-                lp().margins(t = dp(6)))
-        })
 
         // ── Voice ──
         col.addView(section("কণ্ঠ"))
@@ -337,7 +299,6 @@ class SettingsActivity : ComponentActivity() {
         super.onResume()
         renderKey()
         renderModes()
-        renderLock()
         syncSwitches()
         renderPermissions()
     }
@@ -419,16 +380,6 @@ class SettingsActivity : ComponentActivity() {
                 VibeService.send(this, VibeService.A_STOP_TALK)
             }, lp().margins(b = dp(8)))
         }
-    }
-
-    private fun renderLock() {
-        val has = Prefs.ownerVoice != null
-        lockInfo.text = when {
-            !has -> "এখনো তোমার কণ্ঠ রেকর্ড করা হয়নি। ৫টা ছোট বাক্য বললেই হবে।"
-            Prefs.voiceLock -> "চালু ✓ — অন্য কারো কণ্ঠে Vibe জাগবে না।"
-            else -> "তোমার কণ্ঠ রেকর্ড করা আছে, কিন্তু Voice Lock বন্ধ।"
-        }
-        lockButton.text = if (has) "আবার কণ্ঠ রেকর্ড / টেস্ট করো" else "আমার কণ্ঠ রেকর্ড করো"
     }
 
     // ── Voices ───────────────────────────────────────────────────────────────
@@ -648,8 +599,7 @@ class SettingsActivity : ComponentActivity() {
                 set(on)
                 b.post {
                     syncSwitches()
-                    renderLock()
-                }
+                            }
             }
         }
         switches += sw to get

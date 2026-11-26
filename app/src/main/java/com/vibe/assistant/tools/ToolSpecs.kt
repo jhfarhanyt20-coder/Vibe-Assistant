@@ -42,6 +42,19 @@ object ToolSpecs {
                     "message" to str("The exact message text"),
                     "confirmed" to bool("User has confirmed recipient and text"),
                     required = listOf("to", "message", "confirmed"))),
+            fn("whatsapp_message", "Send a WhatsApp text message to a contact — fast and direct. Use this (not do_task) " +
+                "for WhatsApp texts. First call with confirmed=false to get the read-back, then confirmed=true after a yes.",
+                obj("to" to str("Contact name or phone number"),
+                    "message" to str("The exact message text"),
+                    "confirmed" to bool("User has confirmed recipient and text"),
+                    required = listOf("to", "message", "confirmed"))),
+            fn("send_voice_message", "Record the message in YOUR (Vibe's) voice and send it as a voice message, " +
+                "on WhatsApp by default. First confirmed=false for the read-back, then confirmed=true after a yes.",
+                obj("to" to str("Contact name or phone number"),
+                    "message" to str("What the voice message should say, in the user's language"),
+                    "app" to enum("Which app", "whatsapp", "telegram", "messenger", "other"),
+                    "confirmed" to bool("User has confirmed recipient and text"),
+                    required = listOf("to", "message", "confirmed"))),
             fn("open_app", "Open an installed app by its name (English name works best, e.g. WhatsApp, Camera).",
                 obj("app" to str("App name"), required = listOf("app"))),
             fn("youtube_play", "Search YouTube and play the first matching video (songs, videos).",
@@ -74,7 +87,8 @@ object ToolSpecs {
                 obj("action" to enum("Action", "home", "back", "recents", "notifications",
                     "quick_settings", "lock", "screenshot"), required = listOf("action"))),
             fn("phone_status", "Battery level, charging, network, time, and whether the phone is locked."),
-            fn("unlock_phone", "Ask the user to unlock the phone (shows the unlock prompt) and wait for it."),
+            fn("unlock_phone", "Bring up the unlock screen and wait while the user unlocks with fingerprint, face or PIN. " +
+                "Never ask the user to say their PIN."),
             fn("remember", "Save a durable fact about the user to long-term memory.",
                 obj("fact" to str("One short sentence"),
                     "category" to enum("Kind", "name", "people", "likes", "habits", "work", "dates", "places", "other"),
@@ -84,7 +98,9 @@ object ToolSpecs {
             fn("end_conversation", "End the conversation and go back to sleep (after saying bye)."),
         )
         if (screenControl) {
-            list += fn("read_screen", "Read what is currently on the screen (text and buttons).")
+            list += fn("look_at_screen", "SEE the screen: takes a screenshot and shows it to you as an image. " +
+                "Use when the user says 'দেখো তো', 'স্ক্রিনে কী আছে', asks about a picture, video, game or anything visual.")
+            list += fn("read_screen", "Read the text and buttons currently on the screen.")
             list += fn("do_task", "Do a multi-step task inside apps by reading the screen and tapping/typing, " +
                 "e.g. 'send \"I am coming\" to Rahim on WhatsApp' or 'turn on dark mode'. " +
                 "Give a complete, specific goal. Returns what was done.",

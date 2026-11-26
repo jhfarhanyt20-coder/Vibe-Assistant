@@ -264,6 +264,72 @@ class VibeAccessibility : AccessibilityService() {
         return performGlobalAction(id)
     }
 
+    // ── Lock-screen PIN pad (voice unlock) ───────────────────────────────────
+
+    private fun allRoots(): List<AccessibilityNodeInfo> {
+        val out = mutableListOf<AccessibilityNodeInfo>()
+        try { windows?.forEach { w -> w.root?.let { out += it } } } catch (_: Exception) {}
+        rootInActiveWindow?.let { out += it }
+        return out
+    }
+
+    private fun walkAll(n: AccessibilityNodeInfo, visit: (AccessibilityNodeInfo) -> Unit) {
+        visit(n)
+        for (i in 0 until n.childCount) n.getChild(i)?.let { walkAll(it, visit) }
+    }
+
+    /** The digit keys 0-9 of the PIN pad, if one is on screen. */
+    fun pinKeys(): Map<Char, AccessibilityNodeInfo>? {
+        val keys = HashMap<Char, AccessibilityNodeInfo>()
+        for (root in allRoots()) walkAll(root) { n ->
+            if (!n.isVisibleToUser) return@walkAll
+            val label = (n.text ?: n.contentDescription)?.toString()?.trim() ?: return@walkAll
+            val ch = label.firstOrNull() ?: return@walkAll
+            val digit = when (ch) {
+                in '0'..'9' -> ch
+                in '০'..'৯' -> '0' + (ch - '০')
+                else -> return@walkAll
+            }
+            // "2", "2 ABC", "2, ABC" — but not the time "12:45" or a date.
+            if (label.length == 1 || label[1] == ' ' || label[1] == ',' || label[1] == '\n') {
+                if (!keys.containsKey(digit) || n.isClickable) keys[digit] = n
+            }
+        }
+        return if (keys.size >= 10) keys else null
+    }
+
+    fun pinEnterKey(): AccessibilityNodeInfo? {
+        val words = listOf("enter", "ok", "done", "confirm", "ঠিক আছে", "সম্পন্ন")
+        for (root in allRoots()) {
+            var found: AccessibilityNodeInfo? = null
+            walkAll(root) { n ->
+                if (found != null || !n.isVisibleToUser) return@walkAll
+                val id = n.viewIdResourceName?.lowercase().orEmpty()
+                val l = (n.contentDescription ?: n.text)?.toString()?.trim()?.lowercase().orEmpty()
+                if ("key_enter" in id || "keyenter" in id || l in words) found = n
+            }
+            if (found != null) return found
+        }
+        return null
+    }
+
+    /** Types the PIN on the lock screen's keypad. True if it was typed. */
+    suspend fun typePin(pin: String): Boolean {
+        repeat(24) {
+            delay(250)
+            val keys = pinKeys() ?: return@repeat
+            for (c in pin) {
+                val k = keys[c] ?: return false
+                tap(k)
+                delay(110)
+            }
+            delay(250)
+            pinEnterKey()?.let { tap(it) }
+            return true
+        }
+        return false
+    }
+
     /** A small JPEG of the screen, base64 — for screens with no readable text (Android 11+). */
     suspend fun screenshotJpeg(): String? {
         if (Build.VERSION.SDK_INT < 30) return null

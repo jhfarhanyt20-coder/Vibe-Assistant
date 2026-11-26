@@ -49,6 +49,8 @@ class MainActivity : ComponentActivity() {
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
             refreshChecklist()
             startBackground()
+            // "Hey Vibe" is on from the start, so make sure the phone won't kill it.
+            Flows.askBattery(this)
         }
 
     private var homeShown = false
@@ -74,6 +76,14 @@ class MainActivity : ComponentActivity() {
         if (!homeShown) showHome()
         startBackground()
         com.vibe.assistant.update.Updater.autoCheck(this)
+        // "Hey Vibe" is on by default: fetch its offline model in the background the
+        // first time, with no prompt. Progress shows under the orb.
+        if (Prefs.wakeEnabled && Flows.hasMic(this) &&
+            !com.vibe.assistant.wake.WakeWord.isModelReady(this) && !WakeModelDownloader.busy
+        ) {
+            val app = applicationContext
+            WakeModelDownloader.start(this) { VibeService.send(app, VibeService.A_ENSURE) }
+        }
         refreshChips()
         refreshChecklist()
     }
@@ -155,6 +165,7 @@ class MainActivity : ComponentActivity() {
                             withPermissions {
                                 startBackground()
                                 if (!Flows.hasPhone(this@MainActivity)) phoneLauncher.launch(Flows.PHONE_PERMISSIONS)
+                                else Flows.askBattery(this@MainActivity)
                             }
                         }
                         is KeyChecker.Result.Bad -> {

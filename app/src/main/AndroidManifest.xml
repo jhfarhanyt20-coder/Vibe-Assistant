@@ -43,6 +43,12 @@
             <action android:name="android.intent.action.WEB_SEARCH" />
         </intent>
         <package android:name="com.google.android.youtube" />
+        <package android:name="com.whatsapp" />
+        <package android:name="com.whatsapp.w4b" />
+        <intent>
+            <action android:name="android.intent.action.SEND" />
+            <data android:mimeType="audio/*" />
+        </intent>
     </queries>
 
     <application
@@ -71,10 +77,6 @@
             android:windowSoftInputMode="adjustResize" />
 
         <activity
-            android:name=".ui.VoiceEnrollActivity"
-            android:exported="false" />
-
-        <activity
             android:name=".ui.LockActivity"
             android:exported="false"
             android:excludeFromRecents="true"
@@ -101,6 +103,16 @@
                 android:name="android.accessibilityservice"
                 android:resource="@xml/accessibility_config" />
         </service>
+
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
 
         <receiver
             android:name=".update.UpdateReceiver"

@@ -30,6 +30,9 @@ object VibeBus {
     /** Connection / voice-lock events, newest last, for the log in Settings. */
     val log = MutableStateFlow<List<String>>(emptyList())
 
+    /** When Voice Lock last confirmed it was the owner speaking (elapsedRealtime). */
+    @Volatile var ownerVerifiedAt = 0L
+
     @Volatile var micLevel = 0f
     @Volatile var outLevel = 0f
 

@@ -64,7 +64,7 @@ object Prefs {
         set(v) = sp.edit().putString("live_models", v.joinToString("|")).apply()
 
     var wakeEnabled: Boolean
-        get() = sp.getBoolean("wake_enabled", false)
+        get() = sp.getBoolean("wake_enabled", true) // on by default: the model ships in the APK
         set(v) = sp.edit().putBoolean("wake_enabled", v).apply()
 
     var overlayEnabled: Boolean
@@ -134,6 +134,21 @@ object Prefs {
     var googleSearch: Boolean
         get() = sp.getBoolean("google_search", true)
         set(v) = sp.edit().putBoolean("google_search", v).apply()
+
+    /** The phone's lock-screen PIN, encrypted like the API key. Only used by voice unlock. */
+    var unlockPin: String?
+        get() = SecureBox.decrypt(secure.getString("unlock_pin", null))
+        set(value) {
+            val v = value?.filter { it.isDigit() }?.takeIf { it.length >= 4 }
+            secure.edit().apply {
+                if (v == null) remove("unlock_pin") else putString("unlock_pin", SecureBox.encrypt(v))
+            }.apply()
+        }
+
+    /** Unlock by voice: only after Voice Lock has just recognised the owner. */
+    var voiceUnlock: Boolean
+        get() = sp.getBoolean("voice_unlock", false)
+        set(v) = sp.edit().putBoolean("voice_unlock", v).apply()
 
     /** Check GitHub for a new version and download it automatically. */
     var autoUpdate: Boolean

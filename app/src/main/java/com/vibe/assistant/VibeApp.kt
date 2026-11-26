@@ -10,6 +10,15 @@ class VibeApp : Application() {
         super.onCreate()
         Prefs.init(this)
         com.vibe.assistant.core.Memory.init(this)
+        // Voice identification was removed (the owner's voice varies too much and
+        // Vibe went silent). Make sure an older install's enrolled voice can't gate anything.
+        if (Prefs.voiceLock || Prefs.voiceUnlock || Prefs.ownerVoice != null || Prefs.unlockPin != null) {
+            Prefs.voiceLock = false
+            Prefs.voiceUnlock = false
+            Prefs.ownerVoice = null
+            Prefs.unlockPin = null
+        }
+        com.vibe.assistant.wake.VoskModels.warmUp(this)
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(
             NotificationChannel(CH_SERVICE, "Vibe চলছে", NotificationManager.IMPORTANCE_LOW).apply {

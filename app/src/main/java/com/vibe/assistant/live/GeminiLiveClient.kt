@@ -117,6 +117,12 @@ class GeminiLiveClient(
         if (ready) ws?.send("{\"realtimeInput\":{\"activityEnd\":{}}}")
     }
 
+    /** One picture (a screenshot) into the session, so the model can see the screen. */
+    fun sendImage(jpegB64: String): Boolean {
+        if (!ready) return false
+        return ws?.send("{\"realtimeInput\":{\"video\":{\"mimeType\":\"image/jpeg\",\"data\":\"$jpegB64\"}}}") == true
+    }
+
     /** A text turn from the app itself, e.g. "an incoming call from Rahim". */
     fun sendText(text: String) {
         if (!ready) return

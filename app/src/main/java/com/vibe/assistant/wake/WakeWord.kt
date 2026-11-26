@@ -44,19 +44,66 @@ object VoskModels {
     const val GRAMMAR = "[\"hey vibe\", \"hi vibe\", \"okay vibe\", \"hey vibes\", \"[unk]\"]"
 
     fun dir(ctx: Context, spec: ModelSpec) = File(ctx.filesDir, "vosk/${spec.name}")
-    fun ready(ctx: Context, spec: ModelSpec) = File(dir(ctx, spec), ".ready").exists()
+
+    private fun unpacked(ctx: Context, spec: ModelSpec) = File(dir(ctx, spec), ".ready").exists()
+
+    /** The model ships inside the APK (assets/vosk/<name>). */
+    fun bundled(ctx: Context, spec: ModelSpec): Boolean = try {
+        ctx.assets.list("vosk/${spec.name}")?.isNotEmpty() == true
+    } catch (_: Exception) {
+        false
+    }
+
+    /** Usable without any download: already unpacked, or inside the APK. */
+    fun ready(ctx: Context, spec: ModelSpec) = unpacked(ctx, spec) || bundled(ctx, spec)
 
     private val lock = Any()
     @Volatile private var model: Model? = null
     @Volatile private var speaker: SpeakerModel? = null
 
+    /**
+     * Vosk reads models from real files, so the copy inside the APK is unpacked
+     * into app storage once (a few seconds, first run only — or after an update
+     * that ships a different model).
+     */
+    fun ensure(ctx: Context, spec: ModelSpec) = synchronized(lock) {
+        if (unpacked(ctx, spec) || !bundled(ctx, spec)) return@synchronized
+        val target = dir(ctx, spec)
+        target.deleteRecursively()
+        fun copy(asset: String, out: File) {
+            val children = ctx.assets.list(asset).orEmpty()
+            if (children.isEmpty()) {
+                out.parentFile?.mkdirs()
+                ctx.assets.open(asset).use { i -> out.outputStream().use { i.copyTo(it) } }
+            } else {
+                out.mkdirs()
+                for (c in children) copy("$asset/$c", File(out, c))
+            }
+        }
+        copy("vosk/${spec.name}", target)
+        File(target, ".ready").writeText("ok")
+    }
+
     fun model(ctx: Context): Model = synchronized(lock) {
+        ensure(ctx, WAKE)
         model ?: Model(dir(ctx, WAKE).absolutePath).also { model = it }
     }
 
     fun speaker(ctx: Context): SpeakerModel? = synchronized(lock) {
         if (!ready(ctx, SPEAKER)) return null
+        ensure(ctx, SPEAKER)
         speaker ?: SpeakerModel(dir(ctx, SPEAKER).absolutePath).also { speaker = it }
+    }
+
+    /** Unpack both bundled models in the background at app start, so first use is instant. */
+    fun warmUp(ctx: Context) {
+        val app = ctx.applicationContext
+        Thread {
+            try {
+                ensure(app, WAKE)
+                ensure(app, SPEAKER)
+            } catch (_: Exception) {}
+        }.start()
     }
 }
 
@@ -85,7 +132,7 @@ class WakeWord(private val ctx: Context) {
             val spk: SpeakerModel?
             try {
                 model = VoskModels.model(ctx)
-                spk = if (Prefs.voiceLock && Prefs.ownerVoice != null) VoskModels.speaker(ctx) else null
+                spk = null // voice identification removed: "Hey Vibe" answers anyone
             } catch (e: Throwable) {
                 Log.e(TAG, "model load failed", e)
                 wanted = false
@@ -142,6 +189,7 @@ class WakeWord(private val ctx: Context) {
                 return
             }
             VibeBus.event("তোমার কণ্ঠ চেনা গেছে (${VoiceId.percent(score)})")
+            VibeBus.ownerVerifiedAt = SystemClock.elapsedRealtime()
         }
         val now = SystemClock.elapsedRealtime()
         if (now - lastFire < 2000) return
