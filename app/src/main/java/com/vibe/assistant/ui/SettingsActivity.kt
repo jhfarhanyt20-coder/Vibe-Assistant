@@ -162,6 +162,15 @@ class SettingsActivity : ComponentActivity() {
         col.addView(section("আচরণ"))
         col.addView(card().apply {
             addView(switchRow(
+                "শুধু কথা (ভার্সন ১-এর মতো)",
+                "চালু করলে Vibe ঠিক ভার্সন ১-এর মতো শুধু কথা বলবে — কল, মেসেজ, স্ক্রিন চালানো বন্ধ থাকবে। কথা বোঝায় পার্থক্য হয় কিনা দেখতে কাজে লাগে।",
+                { Prefs.talkOnly }
+            ) { on ->
+                Prefs.talkOnly = on
+                VibeService.send(this@SettingsActivity, VibeService.A_STOP_TALK)
+            })
+            addView(divider())
+            addView(switchRow(
                 "কথাগুলো লেখা আকারে দেখাও",
                 "বন্ধ থাকলে তোমার বা Vibe-এর কথা স্ক্রিনে লেখা আসবে না — শুধু বলটা নড়বে",
                 { Prefs.showTranscript }

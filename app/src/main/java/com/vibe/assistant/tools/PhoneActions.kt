@@ -49,14 +49,24 @@ object PhoneActions {
                 out.putIfAbsent(cleanNumber(num).takeLast(10), Contact(name, num))
             }
         }
-        // 2) plain "contains" over every name, for nicknames in the middle of a name
+        // 2) every contact, matched across scripts and spellings: "রহিম" finds
+        //    "Rahim", "Rohim" finds "Rahim Uddin" (see Fuzzy). Best matches first.
         if (out.isEmpty()) {
-            val needle = q.lowercase()
+            val scored = mutableListOf<Pair<Int, Contact>>()
             ctx.contentResolver.query(ContactsContract.CommonDataKinds.Phone.CONTENT_URI, proj, null, null, null)?.use { c ->
-                while (c.moveToNext() && out.size < 12) {
+                while (c.moveToNext()) {
                     val name = c.getString(0) ?: continue
                     val num = c.getString(1) ?: continue
-                    if (name.lowercase().contains(needle)) out.putIfAbsent(cleanNumber(num).takeLast(10), Contact(name, num))
+                    val s = Fuzzy.score(q, name) ?: continue
+                    scored += s to Contact(name, num)
+                }
+            }
+            val best = scored.minOfOrNull { it.first }
+            if (best != null) {
+                // Only the closest tier: a near-miss shouldn't compete with a real match.
+                for ((s, c) in scored.sortedBy { it.first }) {
+                    if (s > best + 1 || out.size >= 8) break
+                    out.putIfAbsent(cleanNumber(c.number).takeLast(10), c)
                 }
             }
         }

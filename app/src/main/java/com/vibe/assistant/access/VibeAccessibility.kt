@@ -68,8 +68,26 @@ class VibeAccessibility : AccessibilityService() {
         super.onDestroy()
     }
 
+    /** When Vibe itself last tapped / typed / swiped — events right after are its own. */
+    @Volatile private var ownActionAt = 0L
+
+    private fun mark() {
+        ownActionAt = SystemClock.uptimeMillis()
+    }
+
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        lastEventAt = SystemClock.uptimeMillis()
+        val now = SystemClock.uptimeMillis()
+        lastEventAt = now
+        // A click Vibe did not make, while Vibe is working the screen = the user's finger.
+        // Only clicks count: scrolling and text changes also happen on their own.
+        val t = event?.eventType ?: return
+        if ((t == AccessibilityEvent.TYPE_VIEW_CLICKED || t == AccessibilityEvent.TYPE_VIEW_LONG_CLICKED) &&
+            com.vibe.assistant.core.VibeBus.controllingScreen &&
+            now - ownActionAt > 1500 &&
+            event.packageName?.toString() != packageName
+        ) {
+            VibeService.instance?.onUserTouchedDuringTask()
+        }
     }
 
     override fun onInterrupt() {}
@@ -165,6 +183,21 @@ class VibeAccessibility : AccessibilityService() {
             for (i in 0 until n.childCount) n.getChild(i)?.let { walk(it) }
         }
         walk(root)
+        // Sparse? The real content is probably in another window (a dialog, a
+        // share sheet, a permission pop-up): read the other app windows too.
+        if (nodes.size <= 3) {
+            try {
+                for (w in windows.orEmpty()) {
+                    if (w.type != android.view.accessibility.AccessibilityWindowInfo.TYPE_APPLICATION &&
+                        w.type != android.view.accessibility.AccessibilityWindowInfo.TYPE_SYSTEM
+                    ) continue
+                    val wr = w.root ?: continue
+                    if (wr.packageName?.toString() == packageName) continue // our own bubble
+                    if (wr == root) continue
+                    walk(wr)
+                }
+            } catch (_: Exception) {}
+        }
         return Screen(root.packageName?.toString() ?: "", sb.toString(), nodes)
     }
 
@@ -181,6 +214,7 @@ class VibeAccessibility : AccessibilityService() {
     // ── Acting ───────────────────────────────────────────────────────────────
 
     fun tap(n: AccessibilityNodeInfo): Boolean {
+        mark()
         var x: AccessibilityNodeInfo? = n
         while (x != null && !x.isClickable) x = x.parent
         if (x != null && x.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
@@ -208,6 +242,7 @@ class VibeAccessibility : AccessibilityService() {
         val args = Bundle().apply {
             putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
         }
+        mark()
         val ok = n.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
         if (ok && submit && Build.VERSION.SDK_INT >= 30) {
             n.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id)
@@ -239,7 +274,14 @@ class VibeAccessibility : AccessibilityService() {
         }
     }
 
+    /**
+     * Dispatches a touch and WAITS until Android says it was performed (or
+     * cancelled), up to 2 s — so "tapped" means the finger really landed, not just
+     * that the request was queued (Lucy's dispatchGestureSync). The result comes
+     * back on a thread of its own, so this is safe to call from any thread.
+     */
     private fun gesture(x1: Float, y1: Float, x2: Float, y2: Float, ms: Long): Boolean {
+        mark()
         val p = Path().apply {
             moveTo(x1, y1)
             lineTo(x2, y2)
@@ -247,10 +289,70 @@ class VibeAccessibility : AccessibilityService() {
         val g = GestureDescription.Builder()
             .addStroke(GestureDescription.StrokeDescription(p, 0, ms))
             .build()
-        return dispatchGesture(g, null, null)
+        val latch = java.util.concurrent.CountDownLatch(1)
+        var done = false
+        val sent = try {
+            dispatchGesture(g, object : GestureResultCallback() {
+                override fun onCompleted(gestureDescription: GestureDescription?) {
+                    done = true
+                    latch.countDown()
+                }
+                override fun onCancelled(gestureDescription: GestureDescription?) {
+                    latch.countDown()
+                }
+            }, gestureHandler)
+        } catch (_: Exception) {
+            false
+        }
+        if (!sent) return false
+        latch.await(ms + 2000, java.util.concurrent.TimeUnit.MILLISECONDS)
+        return done
+    }
+
+    private val gestureHandler: Handler by lazy {
+        val t = android.os.HandlerThread("vibe-gesture").apply { start() }
+        Handler(t.looper)
+    }
+
+    // ── Waiting for the screen to really change (Lucy's readiness check) ─────
+
+    /** A fingerprint of what is on screen; clock-like text is ignored so a ticking clock isn't "a change". */
+    fun signature(): String {
+        val s = dump(120)
+        return s.pkg + "\n" + s.text.replace(Regex("\\b\\d{1,2}:\\d{2}(:\\d{2})?\\b"), "")
+    }
+
+    fun foregroundPackage(): String = rootInActiveWindow?.packageName?.toString().orEmpty()
+
+    private fun hasFocusedField(): Boolean =
+        rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)?.isEditable == true
+
+    /**
+     * After an action, wait until the screen shows its effect instead of sleeping
+     * a fixed time: a new screen / content, the keyboard field taking focus after
+     * tapping an input, or the right app in front after opening one. Polls every
+     * 120 ms; gives up at the deadline (slow apps) and lets the next look decide.
+     */
+    suspend fun waitForChange(before: String, kind: String, expectPkg: String? = null, intoField: Boolean = false) {
+        val deadline = SystemClock.uptimeMillis() + when (kind) {
+            "open_app" -> 3500L
+            "type" -> 1200L
+            "tap" -> 1600L
+            else -> 1500L
+        }
+        delay(120)
+        while (SystemClock.uptimeMillis() < deadline) {
+            if (expectPkg != null && foregroundPackage() == expectPkg) break
+            if (intoField && hasFocusedField()) break
+            if (expectPkg == null && signature() != before) break
+            delay(120)
+        }
+        // Let the new screen finish drawing.
+        settle(150, 900)
     }
 
     fun global(action: String): Boolean {
+        mark()
         val id = when (action) {
             "home" -> GLOBAL_ACTION_HOME
             "back" -> GLOBAL_ACTION_BACK

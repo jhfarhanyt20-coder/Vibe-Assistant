@@ -33,15 +33,31 @@ object GeminiText {
 
     class Failure(msg: String) : Exception(msg)
 
-    suspend fun json(system: String, user: String, jpegB64: String? = null): JSONObject = withContext(Dispatchers.IO) {
-        val key = Prefs.apiKey ?: throw Failure("API key নেই")
-        val parts = JSONArray().put(JSONObject().put("text", user))
+    /** A user turn: text plus an optional screenshot. */
+    fun userTurn(text: String, jpegB64: String? = null): JSONObject {
+        val parts = JSONArray().put(JSONObject().put("text", text))
         if (jpegB64 != null) {
             parts.put(JSONObject().put("inlineData", JSONObject().put("mimeType", "image/jpeg").put("data", jpegB64)))
         }
+        return JSONObject().put("role", "user").put("parts", parts)
+    }
+
+    fun modelTurn(text: String): JSONObject =
+        JSONObject().put("role", "model").put("parts", JSONArray().put(JSONObject().put("text", text)))
+
+    suspend fun json(system: String, user: String, jpegB64: String? = null): JSONObject =
+        chat(system, listOf(userTurn(user, jpegB64))).first
+
+    /**
+     * A multi-turn exchange (Lucy keeps a whole task in one chat): [turns]
+     * alternate user / model. Returns the parsed JSON reply and its raw text,
+     * which the caller appends as the next model turn.
+     */
+    suspend fun chat(system: String, turns: List<JSONObject>): Pair<JSONObject, String> = withContext(Dispatchers.IO) {
+        val key = Prefs.apiKey ?: throw Failure("API key নেই")
         val body = JSONObject()
             .put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", system))))
-            .put("contents", JSONArray().put(JSONObject().put("role", "user").put("parts", parts)))
+            .put("contents", JSONArray(turns))
             .put("generationConfig", JSONObject()
                 .put("responseMimeType", "application/json")
                 .put("temperature", 0.2))
@@ -71,7 +87,14 @@ object GeminiText {
                 ?: throw Failure("খালি উত্তর")
             Prefs.agentModel = m
             val cleaned = out.trim().removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
-            return@withContext JSONObject(cleaned)
+            val start = cleaned.indexOf('{')
+            val end = cleaned.lastIndexOf('}')
+            val obj = try {
+                JSONObject(if (start >= 0 && end > start) cleaned.substring(start, end + 1) else cleaned)
+            } catch (e: Exception) {
+                throw Failure("Gemini-র উত্তর বোঝা গেল না")
+            }
+            return@withContext obj to cleaned
         }
         throw Failure(last)
     }

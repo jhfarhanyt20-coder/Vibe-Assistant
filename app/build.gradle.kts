@@ -10,8 +10,8 @@ android {
         applicationId = "com.vibe.assistant"
         minSdk = 29
         targetSdk = 36
-        versionCode = 7
-        versionName = "0.6.0"
+        versionCode = 8
+        versionName = "0.7.0"
     }
 
     buildTypes {
@@ -29,6 +29,10 @@ android {
     packaging {
         jniLibs { useLegacyPackaging = true }
     }
+
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
 }
 
 dependencies {
@@ -41,4 +45,8 @@ dependencies {
     // The models themselves are downloaded on the phone the first time.
     implementation("com.alphacephei:vosk-android:0.3.47@aar")
     implementation("net.java.dev.jna:jna:5.13.0@aar")
+
+    // PC-side tests: plain JVM, with the real org.json instead of Android's stub.
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
 }

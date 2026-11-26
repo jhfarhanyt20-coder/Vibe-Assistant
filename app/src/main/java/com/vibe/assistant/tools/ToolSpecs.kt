@@ -100,6 +100,10 @@ object ToolSpecs {
         if (screenControl) {
             list += fn("look_at_screen", "SEE the screen: takes a screenshot and shows it to you as an image. " +
                 "Use when the user says 'দেখো তো', 'স্ক্রিনে কী আছে', asks about a picture, video, game or anything visual.")
+            list += fn("share_screen", "Start or stop LIVE screen sharing, like Gemini Live: while on, you keep " +
+                "receiving the phone screen as images whenever it changes, so you can watch and talk about it. " +
+                "Turn on when the user says 'আমার স্ক্রিন দেখো' / 'স্ক্রিন শেয়ার'; off when they say stop.",
+                obj("on" to bool("true = start, false = stop"), required = listOf("on")))
             list += fn("tap_on", "Tap something on the screen, described by its name or look " +
                 "(e.g. 'Send', 'the search icon', 'blue Install button', 'first video'). Vibe finds the real control " +
                 "and taps its centre; afterwards you get a fresh screenshot. Use for step-by-step control the user directs.",

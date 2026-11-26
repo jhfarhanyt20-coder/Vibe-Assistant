@@ -87,14 +87,82 @@ class OverlayController(private val ctx: Context) {
 
         scope = CoroutineScope(SupervisorJob() + Dispatchers.Main).also { s ->
             s.launch {
-                combine(VibeBus.state, VibeBus.lines, VibeBus.status) { st, lines, status ->
+                combine(VibeBus.state, VibeBus.lines, VibeBus.status, VibeBus.screenSharing) { st, lines, status, _ ->
                     Triple(st, lines, status)
                 }.collect { (st, lines, status) -> updateCaption(st, lines.lastOrNull(), status) }
             }
         }
     }
 
+    // ── Choice card (e.g. which of several contacts) ─────────────────────────
+
+    private var choiceCard: android.widget.LinearLayout? = null
+    private val choiceTimeout = Runnable { hideChoices() }
+
+    /**
+     * A small card above all apps with one button per option; tapping one calls
+     * [onPick] with its value. Like GeminiLive-Assistant's canvas, but just the part
+     * Vibe needs: picking by touch when several contacts match. Gone after 40 s.
+     */
+    fun showChoices(title: String, options: List<Pair<String, String>>, onPick: (String) -> Unit) {
+        if (!Settings.canDrawOverlays(ctx) || options.isEmpty()) return
+        hideChoices()
+        val card = android.widget.LinearLayout(ctx).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            background = rounded(0xF214132A.toInt(), ctx.dpf(24f), 0x33FFFFFF, ctx.dp(1))
+            setPadding(ctx.dp(16), ctx.dp(14), ctx.dp(16), ctx.dp(12))
+            elevation = ctx.dpf(10f)
+        }
+        val head = android.widget.LinearLayout(ctx).apply {
+            orientation = android.widget.LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        head.addView(ctx.label(title, 15f, VC.TEXT, VC.medium),
+            android.widget.LinearLayout.LayoutParams(0, -2).apply { weight = 1f })
+        head.addView(ctx.label("✕", 18f, VC.SUB, VC.medium, Gravity.CENTER).apply {
+            setPadding(ctx.dp(10), ctx.dp(2), ctx.dp(4), ctx.dp(2))
+            isClickable = true
+            setOnClickListener { hideChoices() }
+        })
+        card.addView(head)
+        for ((label, value) in options.take(6)) {
+            card.addView(ctx.label(label, 15f, VC.TEXT, VC.regular, Gravity.START or Gravity.CENTER_VERTICAL).apply {
+                background = com.vibe.assistant.ui.ripple(
+                    rounded(0x22FFFFFF, ctx.dpf(16f)), rounded(android.graphics.Color.WHITE, ctx.dpf(16f))
+                )
+                minHeight = ctx.dp(46)
+                setPadding(ctx.dp(14), 0, ctx.dp(14), 0)
+                isClickable = true
+                setOnClickListener {
+                    hideChoices()
+                    onPick(value)
+                }
+            }, android.widget.LinearLayout.LayoutParams(-1, -2).apply { topMargin = ctx.dp(8) })
+        }
+        val p = overlayParams((screenBounds().width() * 0.9f).toInt(), WindowManager.LayoutParams.WRAP_CONTENT).apply {
+            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+            y = ctx.dp(150)
+        }
+        try {
+            wm.addView(card, p)
+            choiceCard = card
+            card.alpha = 0f
+            card.translationY = ctx.dpf(24f)
+            card.animate().alpha(1f).translationY(0f).setDuration(180).start()
+            card.postDelayed(choiceTimeout, 40_000)
+        } catch (_: Exception) {}
+    }
+
+    fun hideChoices() {
+        choiceCard?.let {
+            it.removeCallbacks(choiceTimeout)
+            safeRemove(it)
+        }
+        choiceCard = null
+    }
+
     fun hide() {
+        hideChoices()
         scope?.cancel()
         scope = null
         removeTrash()
@@ -117,6 +185,8 @@ class OverlayController(private val ctx: Context) {
         val text = when {
             st == VState.ERROR && status.isNotBlank() -> status
             status.isNotBlank() && st == VState.CONNECTING -> status
+            // Always visible while the screen is shared: you should know Vibe is watching.
+            VibeBus.screenSharing.value && st != VState.ERROR && !Prefs.showTranscript -> "👀 Vibe স্ক্রিন দেখছে"
             !Prefs.showTranscript && st != VState.ERROR -> {
                 caption?.let { safeRemove(it) }
                 caption = null

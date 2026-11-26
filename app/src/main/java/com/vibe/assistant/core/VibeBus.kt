@@ -21,6 +21,12 @@ object VibeBus {
     val status = MutableStateFlow("")
     val lines = MutableStateFlow<List<Line>>(emptyList())
 
+    /** True while the screen is being shared live with Gemini (shown on screen as a notice). */
+    val screenSharing = MutableStateFlow(false)
+
+    /** True while Vibe itself is working the screen (tap_on, do_task...). */
+    @Volatile var controllingScreen = false
+
     /** True while push-to-talk is held. */
     val pttHeld = MutableStateFlow(false)
 

@@ -28,6 +28,12 @@ object Prefs {
         secure = ctx.getSharedPreferences("vibe_secure", Context.MODE_PRIVATE)
     }
 
+    /** PC tests only: plain in-memory settings, so the real prompt can be built without a phone. */
+    fun initForTest(settings: SharedPreferences, secrets: SharedPreferences) {
+        sp = settings
+        secure = secrets
+    }
+
     var apiKey: String?
         get() {
             if (!keyLoaded) {
@@ -130,10 +136,10 @@ object Prefs {
         get() = sp.getBoolean("call_announce", true)
         set(v) = sp.edit().putBoolean("call_announce", v).apply()
 
-    /** Let Gemini search Google for current information. */
+    /** Let Gemini search Google for current information. Off by default: v0.1 had none. */
     var googleSearch: Boolean
-        get() = sp.getBoolean("google_search", true)
-        set(v) = sp.edit().putBoolean("google_search", v).apply()
+        get() = sp.getBoolean("google_search2", false)
+        set(v) = sp.edit().putBoolean("google_search2", v).apply()
 
     /** The phone's lock-screen PIN, encrypted like the API key. Only used by voice unlock. */
     var unlockPin: String?
@@ -166,6 +172,14 @@ object Prefs {
     var updateVersion: String
         get() = sp.getString("update_version", "") ?: ""
         set(v) = sp.edit().putString("update_version", v).apply()
+
+    /**
+     * Talk only, exactly as v0.1 connected: no tools, no search, the v0.1 prompt.
+     * For when the conversation matters more than phone control (and to compare).
+     */
+    var talkOnly: Boolean
+        get() = sp.getBoolean("talk_only", false)
+        set(v) = sp.edit().putBoolean("talk_only", v).apply()
 
     /** Show what you and Vibe say as text on screen (off = only the orb moves). */
     var showTranscript: Boolean

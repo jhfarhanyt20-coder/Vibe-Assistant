@@ -86,6 +86,7 @@ class VibeService : Service(), GeminiLiveClient.Listener, ToolRunner.Host {
         const val A_QUIT = "com.vibe.assistant.QUIT"
         const val A_PTT_DOWN = "com.vibe.assistant.PTT_DOWN"
         const val A_PTT_UP = "com.vibe.assistant.PTT_UP"
+        const val A_STOP_TASK = "com.vibe.assistant.STOP_TASK"
 
         private const val NOTIF_ID = 1
         private const val LOCK_NOTIF_ID = 2
@@ -93,6 +94,16 @@ class VibeService : Service(), GeminiLiveClient.Listener, ToolRunner.Host {
 
         @Volatile var isRunning = false
             private set
+
+        /** The running service, for the accessibility service to report touches to. */
+        @Volatile var instance: VibeService? = null
+            private set
+
+        /** Tools during which Vibe itself is working the screen. */
+        private val SCREEN_TOOLS = setOf(
+            "do_task", "tap_on", "type_text", "scroll_screen", "whatsapp_message",
+            "send_voice_message", "youtube_play",
+        )
 
         /** True while the voice-enrollment screen needs the microphone. */
         @Volatile var micBorrowed = false
@@ -157,11 +168,16 @@ class VibeService : Service(), GeminiLiveClient.Listener, ToolRunner.Host {
     @Volatile private var lastActivity = 0L
     private var wakeLock: PowerManager.WakeLock? = null
     private val toolJobs = mutableMapOf<String, Job>()
+    /** Screen-working tool calls in flight, id → name, so "stop" can answer each one. */
+    private val screenCalls = mutableMapOf<String, String>()
     @Volatile private var apps: List<String> = emptyList()
 
     // Turn-taking
     @Volatile private var manual = false
     @Volatile private var held = false
+    /** Phone-side barge-in fired: drop the rest of the reply being spoken. */
+    @Volatile private var dropReply = false
+    private var loudChunks = 0
     private var pttStartedEarly = false
     private var pttEndedEarly = false
     @Volatile private var gate: VoiceGate? = null
@@ -185,6 +201,7 @@ class VibeService : Service(), GeminiLiveClient.Listener, ToolRunner.Host {
     override fun onCreate() {
         super.onCreate()
         isRunning = true
+        instance = this
         overlay = OverlayController(this)
         route = AudioRoute(this)
         wake = WakeWord(this)
@@ -211,6 +228,7 @@ class VibeService : Service(), GeminiLiveClient.Listener, ToolRunner.Host {
             A_TOGGLE -> if (inConversation) endConversation() else startConversation()
             A_PTT_DOWN -> pttDown()
             A_PTT_UP -> pttUp()
+            A_STOP_TASK -> stopScreenTasks()
             A_QUIT -> {
                 quit()
                 return START_NOT_STICKY
@@ -232,6 +250,7 @@ class VibeService : Service(), GeminiLiveClient.Listener, ToolRunner.Host {
         main.removeCallbacksAndMessages(null)
         if (!VibeBus.active()) VibeBus.setState(VState.OFF)
         isRunning = false
+        if (instance === this) instance = null
         super.onDestroy()
     }
 
@@ -428,19 +447,27 @@ class VibeService : Service(), GeminiLiveClient.Listener, ToolRunner.Host {
             if (held) pttStartedEarly = true
         }
         client?.close()
+        dropReply = false
         val screen = VibeAccessibility.isEnabled(this)
+        val talkOnly = Prefs.talkOnly
+        VibeBus.event(
+            "সংযোগ: ${model.removePrefix("models/")}, " +
+                (if (talkOnly) "শুধু কথা (ভার্সন ১-এর মতো)" else "টুল চালু") +
+                (if (!talkOnly && useSearch) ", Search" else "") + (if (manual) ", চেপে ধরে কথা" else "")
+        )
         client = GeminiLiveClient(
             apiKey = key,
             model = model,
             voice = Prefs.voice,
-            systemPrompt = Prompt.build(isLocked(), screen, apps),
+            // Talk-only connects exactly as v0.1 did: its prompt, no tools, no search.
+            systemPrompt = if (talkOnly) Prompt.v01() else Prompt.build(isLocked(), screen, apps),
             resumeHandle = resumeHandle,
             listener = this,
             keyInUrl = keyInUrl,
-            tools = ToolSpecs.all(screen),
-            googleSearch = useSearch,
+            tools = if (talkOnly) org.json.JSONArray() else ToolSpecs.all(screen),
+            googleSearch = !talkOnly && useSearch,
             manualTurns = manual,
-            quickTurns = useQuick,
+            quickTurns = false,
         ).also { it.connect() }
     }
 
@@ -460,6 +487,24 @@ class VibeService : Service(), GeminiLiveClient.Listener, ToolRunner.Host {
             val sp = speaker
             // Without barge-in the mic is muted while Vibe talks, so it can't hear itself.
             if (!bargeIn && sp != null && sp.isSpeaking()) return
+            // Phone-side barge-in. The server decides interruptions by itself, and on
+            // a loudspeaker it can miss you under Vibe's own voice. So: if you talk
+            // clearly over Vibe for ~0.3 s, stop its voice here at once — the server
+            // then hears you cleanly and takes your turn.
+            if (bargeIn && sp != null && sp.isSpeaking() && !dropReply) {
+                loudChunks = if (VibeBus.micLevel > 0.30f) loudChunks + 1 else 0
+                if (loudChunks >= 6) {
+                    loudChunks = 0
+                    dropReply = true
+                    sp.flush()
+                    main.post {
+                        VibeBus.event("তুমি কথা বললে — Vibe থামল")
+                        if (inConversation) VibeBus.setState(VState.LISTENING)
+                    }
+                }
+            } else if (sp?.isSpeaking() != true) {
+                loudChunks = 0
+            }
         }
         val c = client
         synchronized(pending) {
@@ -583,6 +628,8 @@ class VibeService : Service(), GeminiLiveClient.Listener, ToolRunner.Host {
         }
         pendingText = null
         waitingForNet = false
+        stopScreenShare()
+        VibeBus.controllingScreen = false
         VibeBus.closeTurn()
         cancelLockNotification()
         VibeBus.setState(VState.OFF)
@@ -642,6 +689,8 @@ class VibeService : Service(), GeminiLiveClient.Listener, ToolRunner.Host {
 
     override fun onAudio(c: GeminiLiveClient, pcm: ByteArray) {
         if (c !== client) return
+        // You cut in: the rest of this reply is not wanted, even if the server keeps sending it.
+        if (dropReply) return
         speaker?.enqueue(pcm)
         lastActivity = SystemClock.elapsedRealtime()
         if (VibeBus.state.value != VState.SPEAKING) {
@@ -651,6 +700,7 @@ class VibeService : Service(), GeminiLiveClient.Listener, ToolRunner.Host {
 
     override fun onInterrupted(c: GeminiLiveClient) {
         if (c !== client) return
+        dropReply = false
         speaker?.flush()
         main.post {
             if (inConversation && c === client) {
@@ -661,6 +711,8 @@ class VibeService : Service(), GeminiLiveClient.Listener, ToolRunner.Host {
     }
 
     override fun onTurnComplete(c: GeminiLiveClient) {
+        // The dropped reply has ended; the next reply (to what you said) plays normally.
+        if (c === client) dropReply = false
         main.post { if (c === client) VibeBus.closeTurn() }
     }
 
@@ -679,13 +731,28 @@ class VibeService : Service(), GeminiLiveClient.Listener, ToolRunner.Host {
             for (call in calls) {
                 Log.i(TAG, "tool ${call.name} ${call.args}")
                 VibeBus.event("টুল: ${call.name}")
+                val touchesScreen = call.name in SCREEN_TOOLS
+                if (touchesScreen) prepareWarning()
                 val job = scope.launch {
+                    if (touchesScreen) {
+                        screenCalls[call.id] = call.name
+                        VibeBus.controllingScreen = true
+                        updateNotification()
+                    }
                     val result = try {
                         tools.run(call.name, call.args)
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
                         JSONObject().put("error", e.message ?: e.javaClass.simpleName)
+                    } finally {
+                        if (touchesScreen) {
+                            screenCalls.remove(call.id)
+                            if (screenCalls.isEmpty()) {
+                                VibeBus.controllingScreen = false
+                                updateNotification()
+                            }
+                        }
                     }
                     toolJobs.remove(call.id)
                     lastActivity = SystemClock.elapsedRealtime()
@@ -961,6 +1028,128 @@ class VibeService : Service(), GeminiLiveClient.Listener, ToolRunner.Host {
 
     override fun sendImageToLive(jpegB64: String): Boolean = client?.sendImage(jpegB64) == true
 
+    // ── Live screen sharing (like Gemini Live) ───────────────────────────────
+
+    private var shareJob: Job? = null
+
+    override fun setScreenShare(on: Boolean): String? {
+        if (!on) {
+            stopScreenShare()
+            return null
+        }
+        if (Build.VERSION.SDK_INT < 30) return "Live screen sharing needs Android 11 or newer."
+        if (VibeAccessibility.instance == null) return "Screen control (Accessibility) is off, so Vibe cannot see the screen."
+        if (shareJob?.isActive == true) return null
+        VibeBus.screenSharing.value = true
+        shareJob = scope.launch {
+            val started = SystemClock.elapsedRealtime()
+            var lastSent = 0L
+            var lastSeenEvent = -1L
+            var lastBlocked = false
+            while (inConversation && VibeBus.screenSharing.value &&
+                SystemClock.elapsedRealtime() - started < 10 * 60_000L
+            ) {
+                val acc = VibeAccessibility.instance ?: break
+                val now = SystemClock.elapsedRealtime()
+                val changed = acc.lastEventAt != lastSeenEvent
+                // A frame when the screen changed (at most every ~1.5 s), and every 5 s anyway.
+                if ((changed && now - lastSent > 1400) || now - lastSent > 5000) {
+                    val pkg = acc.rootInActiveWindow?.packageName?.toString().orEmpty()
+                    val blocked = com.vibe.assistant.agent.PhoneAgent(this@VibeService).isBlocked(pkg)
+                    if (blocked) {
+                        if (!lastBlocked) client?.sendText("[SCREEN] The user opened a private app ($pkg); screen frames are paused for safety.")
+                    } else {
+                        lastSeenEvent = acc.lastEventAt
+                        acc.shot(1024, 70)?.let { client?.sendImage(it.b64) }
+                    }
+                    lastBlocked = blocked
+                    lastSent = SystemClock.elapsedRealtime()
+                }
+                delay(400)
+            }
+            VibeBus.screenSharing.value = false
+        }
+        return null
+    }
+
+    private fun stopScreenShare() {
+        shareJob?.cancel()
+        shareJob = null
+        VibeBus.screenSharing.value = false
+    }
+
+    override fun showContactChoices(contacts: List<PhoneActions.Contact>) {
+        main.post {
+            if (!inConversation) return@post
+            overlay.showChoices(
+                "কাকে?",
+                contacts.map { "${it.name}  ·  ${it.number}" to "${it.name} (${it.number})" }
+            ) { picked ->
+                VibeBus.action("👆 $picked")
+                client?.sendText("[CHOICE] The user tapped \"$picked\" on the screen card. Use exactly this contact and continue the request.")
+            }
+        }
+    }
+
+    /** The user pressed "stop": cancel every screen task and tell Gemini it was stopped. */
+    private fun stopScreenTasks() {
+        if (screenCalls.isEmpty()) return
+        val live = client
+        for ((id, name) in screenCalls.toMap()) {
+            toolJobs.remove(id)?.cancel()
+            if (live != null && live.ready) {
+                live.sendToolResponse(id, name, JSONObject().put("error",
+                    "The user stopped this task with the stop button. Say briefly that you stopped, and don't retry unless asked."))
+            }
+        }
+        screenCalls.clear()
+        VibeBus.controllingScreen = false
+        VibeBus.status.value = ""
+        VibeBus.action("✋ কাজ থামানো হলো")
+        VibeBus.event("তুমি কাজ থামিয়েছ")
+        updateNotification()
+    }
+
+    // ── "I'm using the phone right now" ──────────────────────────────────────
+
+    private val warnPhrase = "এখন আমি ফোনটা ব্যবহার করছি, একটু অপেক্ষা করো।"
+    @Volatile private var warnPcm: ByteArray? = null
+    @Volatile private var warnVoice = ""
+    private var lastWarnAt = 0L
+
+    /** Prepares the warning in Vibe's own voice ahead of time, so it plays instantly. */
+    private fun prepareWarning() {
+        if (warnPcm != null && warnVoice == Prefs.voice) return
+        val voice = Prefs.voice
+        val file = java.io.File(filesDir, "warn_$voice.pcm")
+        learnScope.launch {
+            try {
+                val pcm = if (file.exists()) file.readBytes()
+                else com.vibe.assistant.tools.VoiceNote.speak(warnPhrase).also { file.writeBytes(it) }
+                warnPcm = pcm
+                warnVoice = voice
+            } catch (_: Exception) {}
+        }
+    }
+
+    /** The user touched the screen while Vibe was working it. */
+    fun onUserTouchedDuringTask() {
+        main.post {
+            val now = SystemClock.elapsedRealtime()
+            if (now - lastWarnAt < 8000) return@post
+            lastWarnAt = now
+            VibeBus.action("✋ $warnPhrase")
+            VibeBus.event("কাজের মাঝে তুমি স্ক্রিনে চাপ দিয়েছ")
+            val pcm = warnPcm
+            val sp = speaker
+            if (inConversation && pcm != null && sp != null) {
+                sp.enqueue(pcm)
+            } else {
+                android.widget.Toast.makeText(this, warnPhrase, android.widget.Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
     override fun releaseAudioThen(action: () -> Unit) {
         main.post {
             val start = SystemClock.elapsedRealtime()
@@ -1045,7 +1234,11 @@ class VibeService : Service(), GeminiLiveClient.Listener, ToolRunner.Host {
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .setContentIntent(open)
             .addAction(0, if (VibeBus.active(st)) "থামাও" else "কথা বলো", servicePi(A_TOGGLE, 2))
-            .addAction(0, "বন্ধ করো", servicePi(A_QUIT, 3))
+            .apply {
+                // While Vibe is working the screen, one tap stops it (Lucy's stop notification).
+                if (VibeBus.controllingScreen) addAction(0, "✋ কাজ থামাও", servicePi(A_STOP_TASK, 4))
+                else addAction(0, "বন্ধ করো", servicePi(A_QUIT, 3))
+            }
             .build()
     }
 

@@ -31,6 +31,10 @@ class ToolRunner(private val ctx: Context, private val host: Host) {
          * never starts while Vibe still holds the audio.
          */
         fun releaseAudioThen(action: () -> Unit)
+        /** Starts / stops streaming the screen into the conversation. Null if it went fine, else why not. */
+        fun setScreenShare(on: Boolean): String?
+        /** Shows a tap-to-choose card of contacts; a pick is told to Gemini as a [CHOICE] note. */
+        fun showContactChoices(contacts: List<PhoneActions.Contact>)
     }
 
     private fun has(p: String) = ctx.checkSelfPermission(p) == android.content.pm.PackageManager.PERMISSION_GRANTED
@@ -71,8 +75,12 @@ class ToolRunner(private val ctx: Context, private val host: Host) {
         }
         return when {
             list.isEmpty() -> Target.Reply(err("No contact named '$to'. Try the other spelling (English/Bangla) or ask the user."))
-            list.size > 1 -> Target.Reply(ok("multiple_matches: " + list.joinToString("; ") { "${it.name} (${it.number})" } +
-                ". Ask which one, then call again with the exact name."))
+            list.size > 1 -> {
+                host.showContactChoices(list)
+                Target.Reply(ok("multiple_matches: " + list.joinToString("; ") { "${it.name} (${it.number})" } +
+                    ". A card with these names is on the screen too: ask which one (the user may say it or tap it), " +
+                    "then call again with the exact name."))
+            }
             else -> Target.One(list.first())
         }
     }
@@ -137,8 +145,12 @@ class ToolRunner(private val ctx: Context, private val host: Host) {
                 }
                 when {
                     list.isEmpty() -> err("No contact named '$to'. Try another spelling (English/Bangla) or ask the user.")
-                    list.size > 1 && !confirmed -> ok("multiple_matches: " + list.joinToString("; ") { "${it.name} (${it.number})" } +
-                        ". Ask the user which one, then call again with the exact name and confirmed=true.")
+                    list.size > 1 && !confirmed -> {
+                        host.showContactChoices(list)
+                        ok("multiple_matches: " + list.joinToString("; ") { "${it.name} (${it.number})" } +
+                            ". A card with these names is on the screen too: ask which one (the user may say it or tap it), " +
+                            "then call again with the exact name and confirmed=true.")
+                    }
                     else -> {
                         val c = list.first()
                         callSoon(c.number, c.name)
@@ -264,6 +276,24 @@ class ToolRunner(private val ctx: Context, private val host: Host) {
                     if (sent) return@withContext ok("voice message sent to ${t.name} (verified on screen)")
                 }
                 finishByScreen(goal)
+            }
+
+            "share_screen" -> {
+                val on = a.optBoolean("on", true)
+                if (on) unlocked()?.let { return@withContext it }
+                val why = host.setScreenShare(on)
+                when {
+                    why != null -> err(why)
+                    on -> {
+                        VibeBus.action("👀 স্ক্রিন শেয়ার চালু")
+                        ok("Screen sharing is ON. You will now keep getting the screen as images whenever it changes. " +
+                            "Watch and talk about it naturally; say when you see something relevant.")
+                    }
+                    else -> {
+                        VibeBus.action("👀 স্ক্রিন শেয়ার বন্ধ")
+                        ok("Screen sharing is OFF.")
+                    }
+                }
             }
 
             "tap_on", "type_text", "scroll_screen" -> {

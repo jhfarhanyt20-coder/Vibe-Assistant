@@ -6,6 +6,8 @@ local.properties
 *.iml
 .kotlin/
 dist/
+test-key.txt
+app/test-key.txt
 app/src/main/assets/vosk/
 *.apk
 *.keystore
