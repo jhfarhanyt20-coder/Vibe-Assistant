@@ -331,30 +331,113 @@ class VibeAccessibility : AccessibilityService() {
     }
 
     /** A small JPEG of the screen, base64 — for screens with no readable text (Android 11+). */
-    suspend fun screenshotJpeg(): String? {
-        if (Build.VERSION.SDK_INT < 30) return null
-        val bmp: Bitmap = suspendCancellableCoroutine<Bitmap?> { cont ->
-            try {
-                takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor, object : TakeScreenshotCallback {
-                    override fun onSuccess(result: ScreenshotResult) {
-                        val hw = Bitmap.wrapHardwareBuffer(result.hardwareBuffer, result.colorSpace)
-                        val soft = hw?.copy(Bitmap.Config.ARGB_8888, false)
-                        result.hardwareBuffer.close()
-                        if (cont.isActive) cont.resume(soft)
-                    }
+    suspend fun screenshotJpeg(): String? = shot(1280, 80)?.b64
 
-                    override fun onFailure(errorCode: Int) {
-                        if (cont.isActive) cont.resume(null)
-                    }
-                })
-            } catch (_: Exception) {
-                if (cont.isActive) cont.resume(null)
-            }
-        } ?: return null
-        val scale = 720f / bmp.width
-        val small = if (scale < 1f) Bitmap.createScaledBitmap(bmp, 720, (bmp.height * scale).toInt(), true) else bmp
+    /** A screenshot: base64 JPEG plus the REAL screen size it was taken at (pixels). */
+    data class Shot(val b64: String, val screenW: Int, val screenH: Int)
+
+    /**
+     * Screenshot like Mark-LVII's screen_processor: the long side up to [maxSide]
+     * (1280 by default), JPEG quality [quality] (82 there). Android allows about one
+     * screenshot a second, so a too-soon request waits and tries once more.
+     */
+    suspend fun shot(maxSide: Int = 1280, quality: Int = 80): Shot? {
+        if (Build.VERSION.SDK_INT < 30) return null
+        var bmp = grab()
+        if (bmp == null) {
+            delay(1100)
+            bmp = grab()
+        }
+        bmp ?: return null
+        val w = bmp.width
+        val h = bmp.height
+        val scale = maxSide.toFloat() / maxOf(w, h)
+        val small = if (scale < 1f) Bitmap.createScaledBitmap(bmp, (w * scale).toInt(), (h * scale).toInt(), true) else bmp
         val out = ByteArrayOutputStream()
-        small.compress(Bitmap.CompressFormat.JPEG, 60, out)
-        return Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
+        small.compress(Bitmap.CompressFormat.JPEG, quality, out)
+        return Shot(Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP), w, h)
     }
+
+    private suspend fun grab(): Bitmap? = suspendCancellableCoroutine { cont ->
+        try {
+            takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor, object : TakeScreenshotCallback {
+                override fun onSuccess(result: ScreenshotResult) {
+                    val hw = Bitmap.wrapHardwareBuffer(result.hardwareBuffer, result.colorSpace)
+                    val soft = hw?.copy(Bitmap.Config.ARGB_8888, false)
+                    result.hardwareBuffer.close()
+                    if (cont.isActive) cont.resume(soft)
+                }
+
+                override fun onFailure(errorCode: Int) {
+                    if (cont.isActive) cont.resume(null)
+                }
+            })
+        } catch (_: Exception) {
+            if (cont.isActive) cont.resume(null)
+        }
+    }
+
+    // ── Finding a control by what it is called (Mark-LVII's rule) ───────────
+
+    private fun fold(s: String) = java.text.Normalizer.normalize(s, java.text.Normalizer.Form.NFKD)
+        .replace(Regex("\\p{M}+"), "").lowercase().replace(Regex("\\s+"), " ").trim()
+
+    /**
+     * The on-screen control whose name matches [description], from the
+     * accessibility tree — so a tap lands on the real element's exact centre,
+     * never on a guessed pixel. Exact name beats "starts with" beats "contains";
+     * enabled, tappable controls win ties. Null if nothing is named like that.
+     */
+    fun findByName(description: String): AccessibilityNodeInfo? {
+        val q = fold(description.removeSuffix("button").removeSuffix("বাটন"))
+        if (q.length < 2) return null
+        var best: AccessibilityNodeInfo? = null
+        var bestScore = 0
+        for (root in allRoots()) walkAll(root) { n ->
+            if (!n.isVisibleToUser) return@walkAll
+            if (n.packageName?.toString() == packageName) return@walkAll // never our own bubble
+            val names = listOfNotNull(
+                n.text?.toString(), n.contentDescription?.toString(),
+                if (Build.VERSION.SDK_INT >= 26) n.hintText?.toString() else null,
+                n.viewIdResourceName?.substringAfterLast('/')?.replace('_', ' '),
+            ).map { fold(it) }.filter { it.isNotEmpty() }
+            var s = 0
+            for (name in names) s = maxOf(s, when {
+                name == q -> 100
+                name.startsWith(q) -> 70
+                q.length >= 3 && name.contains(q) -> 50
+                name.length >= 3 && q.contains(name) -> 30
+                else -> 0
+            })
+            if (s == 0) return@walkAll
+            if (n.isClickable || n.isEditable) s += 10
+            if (!n.isEnabled) s -= 40
+            if (s > bestScore) {
+                bestScore = s
+                best = n
+            }
+        }
+        return if (bestScore >= 30) best else null
+    }
+
+    /** The smallest tappable control whose rectangle contains (x, y), if any. */
+    fun tappableAt(x: Int, y: Int): AccessibilityNodeInfo? {
+        var best: AccessibilityNodeInfo? = null
+        var bestArea = Long.MAX_VALUE
+        val r = Rect()
+        for (root in allRoots()) walkAll(root) { n ->
+            if (!n.isVisibleToUser || !(n.isClickable || n.isEditable)) return@walkAll
+            if (n.packageName?.toString() == packageName) return@walkAll
+            n.getBoundsInScreen(r)
+            if (!r.contains(x, y)) return@walkAll
+            val area = r.width().toLong() * r.height()
+            if (area in 1 until bestArea) {
+                bestArea = area
+                best = n
+            }
+        }
+        return best
+    }
+
+    fun longPressAt(x: Float, y: Float) = gesture(x, y, x, y, 700)
 }

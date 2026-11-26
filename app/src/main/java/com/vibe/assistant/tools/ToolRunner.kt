@@ -266,6 +266,57 @@ class ToolRunner(private val ctx: Context, private val host: Host) {
                 finishByScreen(goal)
             }
 
+            "tap_on", "type_text", "scroll_screen" -> {
+                unlocked()?.let { return@withContext it }
+                val acc = VibeAccessibility.instance
+                    ?: return@withContext err("Screen control (Accessibility) is off. Ask the user to turn on Vibe in Accessibility settings.")
+                val pkg = acc.rootInActiveWindow?.packageName?.toString().orEmpty()
+                if (agent.isBlocked(pkg)) return@withContext err("For safety Vibe does not touch this app ($pkg).")
+                val done: String = when (name) {
+                    "tap_on" -> {
+                        val target = a.optString("target")
+                        val hit = com.vibe.assistant.agent.ScreenVision.locate(acc, target)
+                            ?: return@withContext err("Could not find '$target' on the screen. Look at the screenshot and describe it differently, or scroll.")
+                        if (!com.vibe.assistant.agent.ScreenVision.tap(acc, hit, a.optBoolean("long_press", false))) {
+                            return@withContext err("Found '$target' but the tap did not go through.")
+                        }
+                        VibeBus.action("👆 ${hit.label.ifBlank { target }}")
+                        "tapped '${hit.label.ifBlank { target }}' (found by ${hit.how})"
+                    }
+                    "type_text" -> {
+                        val text = a.optString("text")
+                        val into = a.optString("into").trim()
+                        var field: android.view.accessibility.AccessibilityNodeInfo? = null
+                        if (into.isNotEmpty()) {
+                            val hit = com.vibe.assistant.agent.ScreenVision.locate(acc, into)
+                                ?: return@withContext err("Could not find the field '$into'.")
+                            com.vibe.assistant.agent.ScreenVision.tap(acc, hit)
+                            kotlinx.coroutines.delay(400)
+                            field = hit.node?.takeIf { it.isEditable }
+                        }
+                        if (!acc.type(field, text, a.optBoolean("submit", false))) {
+                            return@withContext err("No text field is ready for typing. Tap the field first (tap_on).")
+                        }
+                        "typed \"$text\""
+                    }
+                    else -> {
+                        val dir = a.optString("direction", "down")
+                        val ok = when (dir) {
+                            "down" -> acc.scroll(null, true)
+                            "up" -> acc.scroll(null, false)
+                            else -> acc.swipe(if (dir == "left") "left" else "right")
+                        }
+                        if (!ok) return@withContext err("Could not scroll.")
+                        "scrolled $dir"
+                    }
+                }
+                // Look again, like Mark-LVII: the next step is decided from the new screen.
+                acc.settle(400, 1800)
+                val sent = acc.shot(1280, 80)?.let { host.sendImageToLive(it.b64) } == true
+                ok("$done. " + if (sent) "A fresh screenshot of the result was just sent to you — check it before the next step."
+                    else "Call look_at_screen to see the result.")
+            }
+
             "look_at_screen" -> {
                 unlocked()?.let { return@withContext it }
                 val acc = VibeAccessibility.instance ?: return@withContext err("Screen control is off, so Vibe cannot see the screen.")

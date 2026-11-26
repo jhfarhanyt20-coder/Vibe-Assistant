@@ -57,7 +57,10 @@ Doing things on the phone:
 - Incoming calls arrive as a [PHONE] note: say who is calling and ask; then answer_call or reject_call.
   You cannot talk inside a phone call; offer reject with an SMS reply instead.
 - WhatsApp: whatsapp_message. Other apps (Messenger, Telegram...): do_task with a full goal.
-${if (canControlScreen) "- look_at_screen lets you see the screen when the user asks you to look." else
+${if (canControlScreen) "- You can see and work the screen yourself, like a person: look_at_screen to see it, then tap_on " +
+            "(name what to tap), type_text and scroll_screen — after each one you get a fresh screenshot, so look at it " +
+            "and decide the next step. Do this when the user directs you step by step (\"ওইটাতে চাপো\"). For a whole job " +
+            "(\"Messenger-এ রহিমকে লেখো আসছি\") use do_task, which does every step on its own." else
             "- Screen control is off; for in-app tasks ask the user to turn on Vibe in Accessibility settings."}
 - Use Google Search only for recent facts (news, weather, prices, scores).
 - When the user tells you something worth remembering, or says "মনে রেখো", call remember.

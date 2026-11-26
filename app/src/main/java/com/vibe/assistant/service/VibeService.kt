@@ -406,7 +406,8 @@ class VibeService : Service(), GeminiLiveClient.Listener, ToolRunner.Host {
         }
         mic = m
         lastActivity = SystemClock.elapsedRealtime()
-        if (isLocked() && !ringing) showLockUi(force = false)
+        // As in v0.1: locked OR screen off → light the screen and show Vibe over the lock screen.
+        if ((isLocked() || !isScreenOn()) && !ringing) showLockUi(force = false)
         refreshApps()
         VibeBus.event("কথোপকথন শুরু" + when {
             Prefs.pushToTalk -> " (চেপে ধরে কথা)"
@@ -901,6 +902,8 @@ class VibeService : Service(), GeminiLiveClient.Listener, ToolRunner.Host {
     // ── ToolRunner.Host ──────────────────────────────────────────────────────
 
     override fun isLocked(): Boolean = getSystemService(KeyguardManager::class.java).isKeyguardLocked
+
+    private fun isScreenOn(): Boolean = getSystemService(PowerManager::class.java).isInteractive
 
     /**
      * Voice unlock is allowed only when every lock is in place: the user turned it

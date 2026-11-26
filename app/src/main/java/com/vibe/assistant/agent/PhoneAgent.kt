@@ -91,6 +91,10 @@ class PhoneAgent(private val ctx: Context) {
             val ok: Boolean = when (action) {
                 "tap" -> node()?.let { acc.tap(it) } ?: false
                 "long_press" -> node()?.let { acc.longPress(it) } ?: false
+                "tap_target" -> {
+                    val hit = ScreenVision.locate(acc, d.optString("target"))
+                    if (hit == null) false else ScreenVision.tap(acc, hit)
+                }
                 "tap_xy" -> acc.tapAt(d.optDouble("x").toFloat(), d.optDouble("y").toFloat())
                 "type" -> acc.type(node(), d.optString("text"), d.optBoolean("submit", false))
                 "scroll" -> acc.scroll(node(), d.optString("direction", "down") != "up")
@@ -156,12 +160,15 @@ You operate an Android phone for the user, one action at a time, to reach the GO
 Each turn you get the numbered on-screen elements ([id] Class "label" (flags) @x,y) and maybe a screenshot.
 Reply with ONE JSON object only:
 {"action": "...", "id": <element id if needed>, "text": "...", "submit": true/false,
- "direction": "up|down|left|right", "app": "...", "x": 0, "y": 0,
+ "direction": "up|down|left|right", "app": "...", "target": "...", "x": 0, "y": 0,
  "note": "very short Bangla note of what you are doing",
  "summary": "...", "question": "...", "reason": "..."}
 
 Actions:
-- tap (id) / long_press (id) / tap_xy (x,y — only if no element fits)
+- tap (id) / long_press (id)
+- tap_target (target: short description of what to tap, e.g. "blue send arrow at bottom right") — when
+  the thing is in the screenshot but not in the element list. Vibe locates it precisely. Prefer this over tap_xy.
+- tap_xy (x,y) — last resort only
 - type (id of the text field, text, submit=true to press enter/search)
 - scroll (id of a scrollable list or none, direction down|up) / swipe (direction)
 - back / home / open_app (app name) / wait
@@ -178,7 +185,7 @@ Rules:
   (arrow / paper-plane icon, usually right of the text box) and check the bubble appears.
 - Messenger: open Messenger, use its search to find the person, open the chat, tap the "Aa"/message box,
   type, tap the send arrow. WhatsApp: open the chat (search icon at top), type in "Message", tap the green send.
-- If an element has no label, use the screenshot to find it and tap_xy its centre.
+- If an element has no label, find it in the screenshot and use tap_target with a clear description.
 - Never enter passwords, PINs, OTP codes or card numbers. Never confirm a payment, purchase, money transfer,
   deletion, or account change: use ask_user instead and stop.
 - Only send the exact message the goal says, only to the person the goal names. If unsure who, ask_user.

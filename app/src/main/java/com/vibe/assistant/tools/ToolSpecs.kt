@@ -100,6 +100,20 @@ object ToolSpecs {
         if (screenControl) {
             list += fn("look_at_screen", "SEE the screen: takes a screenshot and shows it to you as an image. " +
                 "Use when the user says 'দেখো তো', 'স্ক্রিনে কী আছে', asks about a picture, video, game or anything visual.")
+            list += fn("tap_on", "Tap something on the screen, described by its name or look " +
+                "(e.g. 'Send', 'the search icon', 'blue Install button', 'first video'). Vibe finds the real control " +
+                "and taps its centre; afterwards you get a fresh screenshot. Use for step-by-step control the user directs.",
+                obj("target" to str("What to tap, as it appears on screen"),
+                    "long_press" to bool("Press and hold instead of a tap"),
+                    required = listOf("target")))
+            list += fn("type_text", "Type text into a field on the screen (the focused one, or the one named in 'into').",
+                obj("text" to str("Exact text to type"),
+                    "into" to str("Optional: which field, e.g. 'search box', 'Message'"),
+                    "submit" to bool("Press enter/search after typing"),
+                    required = listOf("text")))
+            list += fn("scroll_screen", "Scroll or swipe the screen.",
+                obj("direction" to enum("Which way the content moves into view", "down", "up", "left", "right"),
+                    required = listOf("direction")))
             list += fn("read_screen", "Read the text and buttons currently on the screen.")
             list += fn("do_task", "Do a multi-step task inside apps by reading the screen and tapping/typing, " +
                 "e.g. 'send \"I am coming\" to Rahim on WhatsApp' or 'turn on dark mode'. " +
