@@ -147,6 +147,7 @@ class VibeService : Service(), GeminiLiveClient.Listener, ToolRunner.Host {
     private var pendingText: String? = null
     @Volatile private var resumeHandle: String? = null
     private var retries = 0
+    private var readyAt = 0L
     private var keyInUrl = false
     private var useSearch = true
     private var useQuick = true
@@ -349,6 +350,7 @@ class VibeService : Service(), GeminiLiveClient.Listener, ToolRunner.Host {
         inConversation = true
         ready = false
         retries = 0
+        readyAt = 0L
         keyInUrl = false
         useSearch = Prefs.googleSearch
         useQuick = true
@@ -618,8 +620,8 @@ class VibeService : Service(), GeminiLiveClient.Listener, ToolRunner.Host {
                     else -> while (pending.isNotEmpty()) c.sendAudio(pending.removeFirst())
                 }
             }
-            retries = 0
-            lastActivity = SystemClock.elapsedRealtime()
+            readyAt = SystemClock.elapsedRealtime()
+            lastActivity = readyAt
             VibeBus.status.value = ""
             VibeBus.setState(VState.LISTENING)
             VibeBus.event("যুক্ত হয়েছে — ${c.model.removePrefix("models/")}" + if (resumeHandle != null) " (আগের কথা মনে আছে)" else "")
@@ -726,8 +728,26 @@ class VibeService : Service(), GeminiLiveClient.Listener, ToolRunner.Host {
             "api key not valid" in r || "api_key_invalid" in r || "api key expired" in r ->
                 fail("API key কাজ করছে না। সেটিংস থেকে নতুন key দাও।")
 
-            "quota" in r || "resource_exhausted" in r || "exceeded" in r || code == 429 ->
-                fail("Gemini-র ফ্রি লিমিট শেষ হয়ে গেছে। কিছুক্ষণ পরে আবার চেষ্টা করো।")
+            // A real quota error only. ("Deadline exceeded" is an ordinary server
+            // timeout and must NOT be read as "your quota is used up".)
+            code == 429 || "quota" in r || "resource_exhausted" in r || "rate limit" in r ||
+                "rate_limit" in r || "too many requests" in r -> {
+                val searchQuota = useSearch && ("search" in r || "grounding" in r)
+                val next = Prefs.liveModels.firstOrNull { it !in triedModels }
+                when {
+                    searchQuota -> {
+                        useSearch = false
+                        VibeBus.event("Google Search-এর লিমিট শেষ — Search ছাড়াই চলছি")
+                        connect(c.model)
+                    }
+                    next != null -> {
+                        VibeBus.event("${c.model.removePrefix("models/")}-এর লিমিট শেষ — অন্য মডেলে যাচ্ছি")
+                        VibeBus.status.value = "অন্য মডেলে চেষ্টা করছি…"
+                        connect(next)
+                    }
+                    else -> fail("Gemini-র লিমিট শেষ (${reason.take(70)})। কিছুক্ষণ পরে আবার চেষ্টা করো।")
+                }
+            }
 
             !wasReady && !keyInUrl && (code == 401 || code == 403) -> {
                 keyInUrl = true
@@ -768,10 +788,14 @@ class VibeService : Service(), GeminiLiveClient.Listener, ToolRunner.Host {
                 fail("যুক্ত হওয়া যাচ্ছে না। (${reason.take(80).ifBlank { code.toString() }})")
 
             else -> {
+                // A session that ran a good while starts the count again; one that keeps
+                // dropping right after connecting backs off further each time
+                // (1, 2, 4, 8, 16, 30 s) so Vibe never hammers the server.
+                if (readyAt > 0 && SystemClock.elapsedRealtime() - readyAt > 60_000) retries = 0
                 retries++
                 VibeBus.setState(VState.CONNECTING)
                 VibeBus.status.value = "আবার যুক্ত হচ্ছে…"
-                val wait = minOf(500L * retries, 6000L)
+                val wait = minOf(1000L shl minOf(retries - 1, 5), 30_000L)
                 main.postDelayed({ if (inConversation && client === c) connect(c.model) }, wait)
             }
         }

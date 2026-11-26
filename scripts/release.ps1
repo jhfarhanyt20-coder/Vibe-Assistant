@@ -31,9 +31,15 @@ $apk = Join-Path $root "dist\Vibe-v$Version.apk"
 Copy-Item (Join-Path $root "app\build\outputs\apk\debug\app-debug.apk") $apk -Force
 
 if (-not $Notes) { $Notes = "Vibe v$Version" }
-git add -A
-git commit -m "Release v$Version"
-git tag "v$Version"
-git push origin HEAD --follow-tags
-gh release create "v$Version" $apk --repo jhfarhanyt20-coder/Vibe-Assistant --title "Vibe v$Version" --notes $Notes
+# git and gh print progress on stderr; in Windows PowerShell that must not count as failure.
+$ErrorActionPreference = "Continue"
+function Invoke-Step([scriptblock]$cmd, [string]$what) {
+    & $cmd 2>&1 | ForEach-Object { "$_" }
+    if ($LASTEXITCODE -ne 0) { throw "$what failed" }
+}
+Invoke-Step { git add -A } "git add"
+Invoke-Step { git commit -q -m "Release v$Version" } "git commit"
+Invoke-Step { git tag "v$Version" } "git tag"
+Invoke-Step { git push -q origin HEAD --follow-tags } "git push"
+Invoke-Step { gh release create "v$Version" $apk --repo jhfarhanyt20-coder/Vibe-Assistant --title "Vibe v$Version" --notes $Notes } "gh release"
 Write-Host "Published v$Version"
