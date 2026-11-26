@@ -35,6 +35,14 @@ class ToolRunner(private val ctx: Context, private val host: Host) {
         fun setScreenShare(on: Boolean): String?
         /** Shows a tap-to-choose card of contacts; a pick is told to Gemini as a [CHOICE] note. */
         fun showContactChoices(contacts: List<PhoneActions.Contact>)
+        /**
+         * Frees the mic/speaker (keeping the session), places the call, and waits until
+         * the phone is really in the call. "ok…" only once that is seen; otherwise the
+         * audio comes back and the reason is returned.
+         */
+        suspend fun callAndVerify(number: String): String
+        /** Same for answering a ringing call. */
+        suspend fun answerAndVerify(speaker: Boolean): String
     }
 
     private fun has(p: String) = ctx.checkSelfPermission(p) == android.content.pm.PackageManager.PERMISSION_GRANTED
@@ -43,16 +51,19 @@ class ToolRunner(private val ctx: Context, private val host: Host) {
      * Calls after Vibe has said its one line and let go of the audio. Works on the
      * lock screen too: the phone's own call screen comes up over it.
      */
-    private fun callSoon(number: String, name: String): JSONObject {
+    private suspend fun callSoon(number: String, name: String): JSONObject {
         if (!has(android.Manifest.permission.CALL_PHONE)) {
             return err("Calling permission is not granted. Tell the user to allow 'Phone' for Vibe.")
         }
         VibeBus.action("📞 কল: $name")
-        host.releaseAudioThen {
-            val r = PhoneActions.placeCall(ctx, number)
-            if (r != "ok") VibeBus.action("📵 কল যায়নি: ${r.removePrefix("error:").trim()}")
+        val r = host.callAndVerify(number)
+        return if (r.startsWith("ok")) {
+            VibeBus.action("📞 $name-এর সাথে কল চলছে ✓")
+            ok("VERIFIED: the call to $name has started (the phone is in the call now). Vibe goes quiet for the call.")
+        } else {
+            VibeBus.action("📵 কল যায়নি")
+            err("NOT DONE: the call to $name did not start — ${r.removePrefix("error:").trim()}")
         }
-        return ok("Calling $name now. Say only one very short line like \"$name-কে কল দিচ্ছি\" — Vibe then goes quiet so the call can start.")
     }
 
     /** A contact name or number → one target, or a result to hand straight back. */
@@ -100,15 +111,41 @@ class ToolRunner(private val ctx: Context, private val host: Host) {
     }
 
     /**
-     * When a shortcut did not provably work, finish the job by looking at the screen.
-     * Returns the agent's verified result.
+     * WhatsApp sending can take more than one press: the send arrow, then (after
+     * sharing a file) a "Send to Rahim?" confirm. Press, look, and press again —
+     * up to three times — until the screen proves it went.
+     */
+    private suspend fun ensureSent(acc: VibeAccessibility, pkg: String, goal: String): Boolean {
+        repeat(3) {
+            val pressed = Messaging.pressSend(pkg, 6000)
+            acc.settle(600, 2500)
+            val (sent, _) = agent.verify(acc, goal)
+            if (sent) return true
+            if (!pressed) return false
+        }
+        return false
+    }
+
+    /**
+     * When a shortcut did not provably work, finish the job by looking at the screen
+     * — and keep at it: up to 3 rounds (each a fresh look, told why the last one
+     * failed) until it is verified done, it needs the user, or the user presses Stop.
      */
     private suspend fun finishByScreen(goal: String): JSONObject {
         if (VibeAccessibility.instance == null) {
             return err("NOT DONE. Screen control (Accessibility) is off, so Vibe could not finish it. Ask the user to turn it on.")
         }
-        VibeBus.status.value = "স্ক্রিন দেখে দেখে করছি…"
-        return res(agent.run(goal) { note -> VibeBus.status.value = note }).also { VibeBus.status.value = "" }
+        var last = ""
+        for (round in 1..3) {
+            VibeBus.status.value = if (round == 1) "স্ক্রিন দেখে দেখে করছি…" else "আবার চেষ্টা করছি ($round)…"
+            val g = if (round == 1) goal else "$goal\n(Previous attempt did not finish: ${last.take(200)}. Try a different way.)"
+            last = agent.run(g, maxSteps = 25) { note -> VibeBus.status.value = note }
+            if (last.startsWith("done") || last.startsWith("need_user") || last.startsWith("stopped") ||
+                last.startsWith("error")
+            ) break
+        }
+        VibeBus.status.value = ""
+        return res(last)
     }
 
     private suspend fun unlocked(): JSONObject? {
@@ -164,13 +201,9 @@ class ToolRunner(private val ctx: Context, private val host: Host) {
                     return@withContext err("Answering permission is not granted. Tell the user to allow 'Phone' for Vibe.")
                 }
                 VibeBus.action("📞 কল ধরছি")
-                val speaker = a.optBoolean("speaker", false)
-                // Free the mic and audio mode first, or the call starts with Vibe still holding them.
-                host.releaseAudioThen {
-                    val r = PhoneActions.answer(ctx, speaker)
-                    if (r != "ok") VibeBus.action("📵 কল ধরা যায়নি: ${r.removePrefix("error:").trim()}")
-                }
-                ok("Answering now. Say at most two words like \"ধরছি\" — Vibe goes quiet for the call.")
+                val r = host.answerAndVerify(a.optBoolean("speaker", false))
+                if (r.startsWith("ok")) ok("VERIFIED: the call is answered and connected. Vibe goes quiet for the call.")
+                else err("NOT DONE: could not answer — ${r.removePrefix("error:").trim()}")
             }
             "reject_call" -> {
                 val number = host.ringingNumber()?.takeIf { it != "unknown" }
@@ -181,7 +214,9 @@ class ToolRunner(private val ctx: Context, private val host: Host) {
                     if (number == null) return@withContext ok("Call rejected, but the caller's number is hidden so no SMS was sent.")
                     val s = PhoneActions.sendSms(ctx, number, reply)
                     VibeBus.action("✉️ কলারকে SMS: $reply")
-                    return@withContext res(if (s == "ok") "ok: rejected and texted the caller" else s)
+                    return@withContext if (s == "ok") ok("VERIFIED: rejected the call and the SMS to the caller was sent.")
+                    else if (s.startsWith("unconfirmed")) ok("Rejected the call; the SMS was handed to the network but not yet confirmed.")
+                    else err("Rejected the call, but the SMS was NOT sent: ${s.removePrefix("error:").trim()}")
                 }
                 res(r)
             }
@@ -210,7 +245,16 @@ class ToolRunner(private val ctx: Context, private val host: Host) {
                     return@withContext ok("needs_confirmation: Read back to the user: to ${target.name} (${target.number}), message: \"$msg\". Ask 'পাঠাবো?' and only after a clear yes call send_sms again with confirmed=true.")
                 }
                 VibeBus.action("✉️ SMS → ${target.name}: $msg")
-                res(PhoneActions.sendSms(ctx, target.number, msg).let { if (it == "ok") "ok: sent to ${target.name}" else it })
+                val s = PhoneActions.sendSms(ctx, target.number, msg)
+                when {
+                    s == "ok" -> {
+                        VibeBus.action("✉️ SMS গেছে ✓")
+                        ok("VERIFIED: the phone network confirmed the SMS to ${target.name} was sent.")
+                    }
+                    s.startsWith("unconfirmed") -> ok("SENT, NOT YET CONFIRMED: the SMS to ${target.name} was handed to the network " +
+                        "but no confirmation arrived within 25 s (weak signal?). Tell the user exactly that.")
+                    else -> err("NOT SENT: ${s.removePrefix("error:").trim()}")
+                }
             }
 
             "whatsapp_message" -> {
@@ -230,11 +274,7 @@ class ToolRunner(private val ctx: Context, private val host: Host) {
                     ?: return@withContext finishByScreen(goal)
                 val acc = VibeAccessibility.instance
                     ?: return@withContext ok("NOT SENT YET: opened ${t.name}'s WhatsApp chat with the message typed. Screen control is off, so the user must tap Send.")
-                // Fast path: press Send, then check the screen really shows it sent.
-                if (Messaging.pressSend(pkg)) {
-                    val (sent, _) = agent.verify(acc, goal)
-                    if (sent) return@withContext ok("sent to ${t.name} on WhatsApp (verified on screen)")
-                }
+                if (ensureSent(acc, pkg, goal)) return@withContext ok("VERIFIED: sent to ${t.name} on WhatsApp — it shows in the chat.")
                 // Shortcut didn't prove itself: do it by looking at the screen.
                 finishByScreen(goal)
             }
@@ -271,9 +311,8 @@ class ToolRunner(private val ctx: Context, private val host: Host) {
                     ?: return@withContext ok("NOT SENT YET: the voice message is open in $app; screen control is off, so the user must pick ${t.name} and tap Send.")
                 val goal = "An audio file (a voice message) is being shared in $app. Send it to ${t.name}: " +
                     "pick ${t.name} if a contact list is shown, tap Send, and make sure the audio appears as sent in ${t.name}'s chat."
-                if (pkg != null && pkg in Messaging.WHATSAPP && Messaging.pressSend(pkg, 10_000)) {
-                    val (sent, _) = agent.verify(acc, goal)
-                    if (sent) return@withContext ok("voice message sent to ${t.name} (verified on screen)")
+                if (pkg != null && pkg in Messaging.WHATSAPP && ensureSent(acc, pkg, goal)) {
+                    return@withContext ok("VERIFIED: the voice message was sent to ${t.name} — it shows in the chat.")
                 }
                 finishByScreen(goal)
             }
@@ -437,6 +476,17 @@ class ToolRunner(private val ctx: Context, private val host: Host) {
                 ok("removed $n")
             }
 
+            "save_unlock_pin" -> {
+                val pin = PhoneActions.cleanNumber(a.optString("pin")).filter { it.isDigit() }
+                if (pin.length < 4) return@withContext err("That doesn't look like a PIN (needs at least 4 digits). Ask again.")
+                Prefs.unlockPin = pin
+                Prefs.voiceUnlock = true
+                VibeBus.action("🔐 PIN সেভ হলো (এনক্রিপ্ট করে)")
+                ok("Saved encrypted on the phone; self-unlock is ON. Do NOT repeat the PIN, and do NOT store it with remember. " +
+                    "Tell the user briefly it's saved, and that anyone who talks to Vibe can now unlock — they can turn it off in Settings." +
+                    if (VibeAccessibility.instance == null) " Screen control (Accessibility) must also be on for Vibe to type it." else "")
+            }
+
             "end_conversation" -> {
                 host.endConversationSoon()
                 ok("ending")
@@ -454,8 +504,9 @@ class ToolRunner(private val ctx: Context, private val host: Host) {
                 unlocked()?.let { return@withContext it }
                 val goal = a.optString("goal")
                 VibeBus.action("🤖 $goal")
-                res(agent.run(goal) { note -> VibeBus.status.value = note })
-                    .also { VibeBus.status.value = "" }
+                // Keeps trying (fresh rounds, each told what went wrong) until verified,
+                // until it needs the user, or until the user presses Stop.
+                finishByScreen(goal)
             }
 
             else -> err("Unknown tool $name")

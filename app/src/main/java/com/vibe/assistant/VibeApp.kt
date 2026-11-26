@@ -11,12 +11,15 @@ class VibeApp : Application() {
         Prefs.init(this)
         com.vibe.assistant.core.Memory.init(this)
         // Voice identification was removed (the owner's voice varies too much and
-        // Vibe went silent). Make sure an older install's enrolled voice can't gate anything.
-        if (Prefs.voiceLock || Prefs.voiceUnlock || Prefs.ownerVoice != null || Prefs.unlockPin != null) {
+        // Vibe went silent). Clear an older install's enrolled voice ONCE — the
+        // self-unlock PIN set after this is the user's and must survive restarts.
+        val mig = getSharedPreferences("vibe_migrations", MODE_PRIVATE)
+        if (!mig.getBoolean("v071_voice_cleanup", false)) {
             Prefs.voiceLock = false
             Prefs.voiceUnlock = false
             Prefs.ownerVoice = null
             Prefs.unlockPin = null
+            mig.edit().putBoolean("v071_voice_cleanup", true).apply()
         }
         // v0.5: back to always-listening conversation once. Push-to-talk left on by
         // accident makes Vibe hear nothing; the user can still turn it on again.

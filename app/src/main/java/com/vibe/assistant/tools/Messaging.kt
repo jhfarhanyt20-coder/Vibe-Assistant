@@ -62,9 +62,12 @@ object Messaging {
                 if (target != null) break
             }
             if (target == null) {
+                // The send arrow (described "Send") OR a confirm button whose TEXT is "SEND"/"পাঠান"
+                // — WhatsApp asks "Send to Rahim?" after sharing a file.
                 target = find(root) { n ->
-                    val d = (n.contentDescription ?: "").toString().lowercase()
-                    n.isVisibleToUser && labels.any { d == it }
+                    val d = (n.contentDescription ?: "").toString().trim().lowercase()
+                    val t = (n.text ?: "").toString().trim().lowercase()
+                    n.isVisibleToUser && n.isEnabled && (labels.any { d == it } || labels.any { t == it })
                 }
             }
             if (target != null && acc.tap(target)) return true

@@ -87,8 +87,11 @@ object ToolSpecs {
                 obj("action" to enum("Action", "home", "back", "recents", "notifications",
                     "quick_settings", "lock", "screenshot"), required = listOf("action"))),
             fn("phone_status", "Battery level, charging, network, time, and whether the phone is locked."),
-            fn("unlock_phone", "Bring up the unlock screen and wait while the user unlocks with fingerprint, face or PIN. " +
-                "Never ask the user to say their PIN."),
+            fn("unlock_phone", "Unlock the phone. If self-unlock is set up, Vibe types the saved PIN itself; " +
+                "otherwise it brings up the unlock screen and waits for the user's fingerprint/face/PIN."),
+            fn("save_unlock_pin", "Save the phone's lock-screen PIN that the user just told you, so Vibe can unlock " +
+                "the phone itself later. Stored encrypted on the phone, never in memory. Never repeat the PIN aloud.",
+                obj("pin" to str("The digits of the PIN"), required = listOf("pin"))),
             fn("remember", "Save a durable fact about the user to long-term memory.",
                 obj("fact" to str("One short sentence"),
                     "category" to enum("Kind", "name", "people", "likes", "habits", "work", "dates", "places", "other"),

@@ -291,22 +291,131 @@ class VibeAccessibility : AccessibilityService() {
             .build()
         val latch = java.util.concurrent.CountDownLatch(1)
         var done = false
-        val sent = try {
-            dispatchGesture(g, object : GestureResultCallback() {
-                override fun onCompleted(gestureDescription: GestureDescription?) {
-                    done = true
-                    latch.countDown()
-                }
-                override fun onCancelled(gestureDescription: GestureDescription?) {
-                    latch.countDown()
-                }
-            }, gestureHandler)
-        } catch (_: Exception) {
-            false
+        // Vibe's own finger must get through the shield that blocks the user's.
+        shieldPassThrough(true)
+        try {
+            val sent = try {
+                dispatchGesture(g, object : GestureResultCallback() {
+                    override fun onCompleted(gestureDescription: GestureDescription?) {
+                        done = true
+                        latch.countDown()
+                    }
+                    override fun onCancelled(gestureDescription: GestureDescription?) {
+                        latch.countDown()
+                    }
+                }, gestureHandler)
+            } catch (_: Exception) {
+                false
+            }
+            if (!sent) return false
+            latch.await(ms + 2000, java.util.concurrent.TimeUnit.MILLISECONDS)
+            return done
+        } finally {
+            shieldPassThrough(false)
         }
-        if (!sent) return false
-        latch.await(ms + 2000, java.util.concurrent.TimeUnit.MILLISECONDS)
-        return done
+    }
+
+    // ── The shield: while Vibe works the screen, the user's touches are held back ──
+
+    private var shield: android.widget.FrameLayout? = null
+    private var shieldParams: android.view.WindowManager.LayoutParams? = null
+
+    private fun onMain(block: () -> Unit) {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            block()
+            return
+        }
+        val l = java.util.concurrent.CountDownLatch(1)
+        main.post {
+            try { block() } finally { l.countDown() }
+        }
+        l.await(500, java.util.concurrent.TimeUnit.MILLISECONDS)
+    }
+
+    /**
+     * A see-through layer over the whole screen (an accessibility overlay, so it
+     * also works on the lock screen and needs no extra permission). Touches on it
+     * never reach the app underneath: Vibe keeps working and says, in its own
+     * voice, that it is using the phone. A small bar on top has the one control
+     * the user keeps — Stop.
+     */
+    fun showShield() = onMain {
+        if (shield != null) return@onMain
+        val wm = getSystemService(android.view.WindowManager::class.java)
+        val d = resources.displayMetrics.density
+        val bar = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.HORIZONTAL
+            gravity = android.view.Gravity.CENTER_VERTICAL
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(0xE614132A.toInt())
+                cornerRadius = 22 * d
+            }
+            setPadding((14 * d).toInt(), (6 * d).toInt(), (6 * d).toInt(), (6 * d).toInt())
+        }
+        bar.addView(android.widget.TextView(this).apply {
+            text = "Vibe কাজ করছে — একটু অপেক্ষা করো"
+            setTextColor(0xFFF2F2F7.toInt())
+            textSize = 13f
+        })
+        bar.addView(android.widget.TextView(this).apply {
+            text = "✋ থামাও"
+            setTextColor(0xFFFFFFFF.toInt())
+            textSize = 13f
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(0xFFFF4D6A.toInt())
+                cornerRadius = 16 * d
+            }
+            setPadding((12 * d).toInt(), (6 * d).toInt(), (12 * d).toInt(), (6 * d).toInt())
+            isClickable = true
+            setOnClickListener { VibeService.send(this@VibeAccessibility, VibeService.A_STOP_TASK) }
+        }, android.widget.LinearLayout.LayoutParams(-2, -2).apply { leftMargin = (10 * d).toInt() })
+
+        val root = android.widget.FrameLayout(this).apply {
+            setBackgroundColor(0x01000000) // invisible, but it takes the touches
+            addView(bar, android.widget.FrameLayout.LayoutParams(-2, -2, android.view.Gravity.TOP or android.view.Gravity.CENTER_HORIZONTAL)
+                .apply { topMargin = (36 * d).toInt() })
+            setOnTouchListener { _, e ->
+                if (e.actionMasked == android.view.MotionEvent.ACTION_DOWN) {
+                    VibeService.instance?.onUserTouchedDuringTask()
+                }
+                true
+            }
+        }
+        val p = android.view.WindowManager.LayoutParams(
+            android.view.WindowManager.LayoutParams.MATCH_PARENT,
+            android.view.WindowManager.LayoutParams.MATCH_PARENT,
+            android.view.WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                android.view.WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                android.view.WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            android.graphics.PixelFormat.TRANSLUCENT
+        )
+        try {
+            wm.addView(root, p)
+            shield = root
+            shieldParams = p
+        } catch (_: Exception) {}
+    }
+
+    fun hideShield() = onMain {
+        shield?.let {
+            try { getSystemService(android.view.WindowManager::class.java).removeView(it) } catch (_: Exception) {}
+        }
+        shield = null
+        shieldParams = null
+    }
+
+    /** Lets a dispatched gesture through the shield for its duration. */
+    private fun shieldPassThrough(pass: Boolean) {
+        if (shield == null) return
+        onMain {
+            val v = shield ?: return@onMain
+            val p = shieldParams ?: return@onMain
+            val f = android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+            p.flags = if (pass) p.flags or f else p.flags and f.inv()
+            try { getSystemService(android.view.WindowManager::class.java).updateViewLayout(v, p) } catch (_: Exception) {}
+        }
+        if (pass) SystemClock.sleep(60) // let the window manager apply it before the touch arrives
     }
 
     private val gestureHandler: Handler by lazy {

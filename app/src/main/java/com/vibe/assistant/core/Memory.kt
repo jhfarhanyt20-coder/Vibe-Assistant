@@ -86,6 +86,7 @@ object Memory {
     fun remember(text: String, category: String = "other"): Boolean = synchronized(this) {
         val t = text.trim()
         if (t.length < 3) return false
+        if (isSecret(t)) return false
         val n = norm(t)
         val dup = facts.indexOfFirst { norm(it.text) == n || norm(it.text).contains(n) || n.contains(norm(it.text)) }
         val fresh = Fact(t, category.ifBlank { "other" }, System.currentTimeMillis())
@@ -96,6 +97,11 @@ object Memory {
         save()
         isNew
     }
+
+    /** Codes never go into memory: memory is sent to Gemini at every conversation start. */
+    fun isSecret(t: String): Boolean =
+        Regex("(?i)(\\bpin\\b|পিন|password|পাসওয়ার্ড|otp|ওটিপি|passcode|পাসকোড|\\bcode\\b|কোড)").containsMatchIn(t) &&
+            Regex("\\d{4,}|[০-৯]{4,}|(\\d[\\s-]?){4,}").containsMatchIn(t)
 
     /** Removes facts that mention the given text. Returns how many. */
     fun forget(text: String): Int = synchronized(this) {

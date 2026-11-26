@@ -220,6 +220,23 @@ class SettingsActivity : ComponentActivity() {
                 lp().margins(t = dp(4)))
         })
 
+        // ── Self-unlock ──
+        col.addView(section("নিজে আনলক"))
+        col.addView(card().apply {
+            addView(switchRow(
+                "Vibe নিজে ফোন আনলক করবে",
+                "“আনলক করো” বললে, বা কোনো কাজে আনলক লাগলে, Vibe সেভ করা PIN নিজেই টাইপ করবে।",
+                { Prefs.voiceUnlock && Prefs.unlockPin != null }
+            ) { on ->
+                if (on) askPin() else Prefs.voiceUnlock = false
+            })
+            addView(label(
+                "⚠️ কণ্ঠ মিলিয়ে দেখা হয় না — এটা চালু থাকলে পাশের যে কেউ “হেই Vibe, আনলক করো” বলে ফোন খুলতে পারবে। " +
+                    "PIN শুধু এই ফোনে এনক্রিপ্ট করে থাকে, Gemini-র মেমোরিতে যায় না। স্ক্রিন কন্ট্রোল (Accessibility) চালু থাকতে হবে।",
+                12.5f, VC.FAINT), lp().margins(t = dp(6)))
+            addView(smallButton("PIN দাও / বদলাও") { askPin() }, lp(ViewGroup.LayoutParams.WRAP_CONTENT).margins(t = dp(10)))
+        })
+
         // ── Memory ──
         col.addView(section("মেমোরি — যা Vibe মনে রেখেছে"))
         col.addView(card().apply {
@@ -389,6 +406,47 @@ class SettingsActivity : ComponentActivity() {
                 VibeService.send(this, VibeService.A_STOP_TALK)
             }, lp().margins(b = dp(8)))
         }
+    }
+
+    /** Typed, never spoken: the PIN for self-unlock. */
+    private fun askPin() {
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(8), dp(20), 0)
+        }
+        box.addView(label("ফোনের লক স্ক্রিনের PIN (শুধু সংখ্যা)", 13.5f, VC.SUB))
+        val input = EditText(this).apply {
+            hint = "••••"
+            setHintTextColor(VC.FAINT)
+            setTextColor(VC.TEXT)
+            textSize = 20f
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_VARIATION_PASSWORD
+            background = rounded(0xFF0E0E1C.toInt(), dpf(14f), VC.STROKE, dp(1))
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+        }
+        box.addView(input, lp().margins(t = dp(10)))
+        Flows.dialog(this)
+            .setTitle("নিজে আনলক")
+            .setView(box)
+            .setPositiveButton("সেভ করে চালু করো") { _, _ ->
+                val pin = input.text.toString().filter { it.isDigit() }
+                if (pin.length < 4) {
+                    Toast.makeText(this, "PIN কমপক্ষে ৪ সংখ্যার হতে হবে", Toast.LENGTH_LONG).show()
+                } else {
+                    Prefs.unlockPin = pin
+                    Prefs.voiceUnlock = true
+                    Toast.makeText(this, "PIN সেভ হয়েছে — Vibe এখন নিজে আনলক করবে", Toast.LENGTH_SHORT).show()
+                    if (!Flows.hasScreenControl(this)) Flows.openAccessibility(this)
+                }
+                syncSwitches()
+            }
+            .setNeutralButton("PIN মুছে দাও") { _, _ ->
+                Prefs.unlockPin = null
+                Prefs.voiceUnlock = false
+                syncSwitches()
+            }
+            .setNegativeButton("বাতিল") { _, _ -> syncSwitches() }
+            .show()
     }
 
     // ── Voices ───────────────────────────────────────────────────────────────

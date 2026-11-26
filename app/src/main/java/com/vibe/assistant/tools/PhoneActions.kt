@@ -137,16 +137,66 @@ object PhoneActions {
         }
     }
 
-    fun sendSms(ctx: Context, number: String, text: String): String {
+    /**
+     * Sends an SMS and waits for the phone network's own "sent" report for every
+     * part (up to 25 s). "ok" means the network accepted it — not just that we asked.
+     * Works with the phone locked.
+     */
+    suspend fun sendSms(ctx: Context, number: String, text: String): String {
         if (!has(ctx, Manifest.permission.SEND_SMS)) return "error: SMS পাঠানোর অনুমতি দেওয়া নেই"
-        return try {
-            val sms = if (Build.VERSION.SDK_INT >= 31) ctx.getSystemService(SmsManager::class.java)
+        val sms = try {
+            if (Build.VERSION.SDK_INT >= 31) ctx.getSystemService(SmsManager::class.java)
             else @Suppress("DEPRECATION") SmsManager.getDefault()
-            val parts = sms.divideMessage(text)
-            sms.sendMultipartTextMessage(cleanNumber(number), null, parts, null, null)
-            "ok"
         } catch (e: Exception) {
-            "error: ${e.message}"
+            return "error: ${e.message}"
+        }
+        val parts = sms.divideMessage(text)
+        val action = "com.vibe.assistant.SMS_SENT." + System.nanoTime()
+        val results = java.util.concurrent.LinkedBlockingQueue<Int>()
+        val receiver = object : android.content.BroadcastReceiver() {
+            override fun onReceive(c: Context, i: android.content.Intent) {
+                results.offer(resultCode)
+            }
+        }
+        androidx.core.content.ContextCompat.registerReceiver(
+            ctx, receiver, android.content.IntentFilter(action), androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED
+        )
+        try {
+            val sent = ArrayList<android.app.PendingIntent>()
+            for (k in parts.indices) {
+                sent += android.app.PendingIntent.getBroadcast(
+                    ctx, (System.nanoTime() and 0x7fffffff).toInt() + k,
+                    android.content.Intent(action).setPackage(ctx.packageName),
+                    android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_ONE_SHOT
+                )
+            }
+            try {
+                sms.sendMultipartTextMessage(cleanNumber(number), null, parts, sent, null)
+            } catch (e: Exception) {
+                return "error: ${e.message}"
+            }
+            return kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                var okParts = 0
+                val deadline = System.currentTimeMillis() + 25_000
+                while (okParts < parts.size) {
+                    val left = deadline - System.currentTimeMillis()
+                    if (left <= 0) return@withContext "unconfirmed: the network has not confirmed it yet"
+                    val code = results.poll(left, java.util.concurrent.TimeUnit.MILLISECONDS)
+                        ?: return@withContext "unconfirmed: the network has not confirmed it yet"
+                    if (code != android.app.Activity.RESULT_OK) {
+                        return@withContext "error: " + when (code) {
+                            SmsManager.RESULT_ERROR_NO_SERVICE -> "no mobile network"
+                            SmsManager.RESULT_ERROR_RADIO_OFF -> "airplane mode / radio off"
+                            SmsManager.RESULT_ERROR_NULL_PDU, SmsManager.RESULT_ERROR_GENERIC_FAILURE -> "the network refused it (balance or SIM problem?)"
+                            else -> "sending failed (code $code)"
+                        }
+                    }
+                    okParts++
+                }
+                "ok"
+            }
+        } finally {
+            try { ctx.unregisterReceiver(receiver) } catch (_: Exception) {}
         }
     }
 }

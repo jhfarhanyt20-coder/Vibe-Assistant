@@ -49,6 +49,15 @@ class LogicTest {
         assertTrue(F.score("Rahim", "Rahim")!! < F.score("Rahim", "Rahima")!!) // exact beats near
     }
 
+    @Test fun pinsNeverGoIntoMemory() {
+        val M = com.vibe.assistant.core.Memory
+        assertTrue(M.isSecret("আমার ফোনের পিন 4821"))
+        assertTrue(M.isSecret("my phone PIN is 1 2 3 4"))
+        assertTrue(M.isSecret("লক কোড ৪৮২১"))
+        assertFalse(M.isSecret("রহিম আমার ভাই, তার জন্মদিন 12 মার্চ"))
+        assertFalse(M.isSecret("I like Arijit Singh songs"))
+    }
+
     @Test fun transcriptPiecesJoinIntoOneLinePerTurn() {
         VibeBus.lines.value = emptyList()
         VibeBus.closeTurn()

@@ -630,6 +630,8 @@ class VibeService : Service(), GeminiLiveClient.Listener, ToolRunner.Host {
         waitingForNet = false
         stopScreenShare()
         VibeBus.controllingScreen = false
+        VibeAccessibility.instance?.hideShield()
+        screenCalls.clear()
         VibeBus.closeTurn()
         cancelLockNotification()
         VibeBus.setState(VState.OFF)
@@ -737,6 +739,7 @@ class VibeService : Service(), GeminiLiveClient.Listener, ToolRunner.Host {
                     if (touchesScreen) {
                         screenCalls[call.id] = call.name
                         VibeBus.controllingScreen = true
+                        VibeAccessibility.instance?.showShield()
                         updateNotification()
                     }
                     val result = try {
@@ -750,6 +753,7 @@ class VibeService : Service(), GeminiLiveClient.Listener, ToolRunner.Host {
                             screenCalls.remove(call.id)
                             if (screenCalls.isEmpty()) {
                                 VibeBus.controllingScreen = false
+                                VibeAccessibility.instance?.hideShield()
                                 updateNotification()
                             }
                         }
@@ -934,7 +938,8 @@ class VibeService : Service(), GeminiLiveClient.Listener, ToolRunner.Host {
                 ringing = false
                 inCall = true
                 VibeBus.event("কল চলছে — Vibe চুপ")
-                if (inConversation) endConversation(resumeWake = false)
+                // A call Vibe placed itself is confirmed by callAndVerify, which then ends the session.
+                if (inConversation && !pausedForCall) endConversation(resumeWake = false)
                 wake.stop()
             }
             TelephonyManager.EXTRA_STATE_IDLE -> {
@@ -978,7 +983,15 @@ class VibeService : Service(), GeminiLiveClient.Listener, ToolRunner.Host {
      * in the last 45 seconds. The PIN never goes to Gemini — it is typed from the
      * phone's own encrypted storage.
      */
-    override fun canVoiceUnlock(): Boolean = false // needs voice identification, which was removed
+    /**
+     * Self-unlock: the user turned it on and saved their PIN (encrypted, on this
+     * phone only). Vibe then types it on the lock screen itself. There is no voice
+     * check — anyone who can talk to Vibe can unlock — which Settings says plainly.
+     */
+    private fun canSelfUnlock(): Boolean =
+        Prefs.voiceUnlock && Prefs.unlockPin != null && VibeAccessibility.instance != null
+
+    override fun canVoiceUnlock(): Boolean = canSelfUnlock()
 
     override suspend fun ensureUnlocked(): Boolean {
         val km = getSystemService(KeyguardManager::class.java)
@@ -992,7 +1005,9 @@ class VibeService : Service(), GeminiLiveClient.Listener, ToolRunner.Host {
             val pin = Prefs.unlockPin
             val acc = VibeAccessibility.instance
             if (pin != null && acc != null) {
-                VibeBus.event("তোমার কণ্ঠ মিলেছে — PIN দিয়ে আনলক করছি")
+                VibeBus.event("সেভ করা PIN দিয়ে আনলক করছি")
+                VibeBus.action("🔓 আনলক করছি")
+                delay(900) // the unlock screen (PIN pad) needs a moment to appear
                 if (!acc.typePin(pin)) VibeBus.event("PIN-এর বোতাম পাওয়া যায়নি — নিজে আনলক করো")
             }
         }
@@ -1078,6 +1093,77 @@ class VibeService : Service(), GeminiLiveClient.Listener, ToolRunner.Host {
         VibeBus.screenSharing.value = false
     }
 
+    // ── Calls with proof ─────────────────────────────────────────────────────
+
+    @Volatile private var pausedForCall = false
+
+    /** Lets go of the mic, speaker and call-audio mode, but keeps the Live session open. */
+    private fun pauseAudio() {
+        mic?.stop(); mic = null
+        speaker?.stop(); speaker = null
+        route.stop()
+    }
+
+    private fun resumeAudio() {
+        if (!inConversation) return
+        route.start()
+        speaker = Speaker().also { it.start() }
+        mic = Mic { onMic(it) }.also { if (!it.start()) VibeBus.event("মাইক আবার চালু হয়নি") }
+    }
+
+    private suspend fun waitForCall(ms: Long): Boolean {
+        val start = SystemClock.elapsedRealtime()
+        while (!inCall && SystemClock.elapsedRealtime() - start < ms) delay(200)
+        return inCall
+    }
+
+    /** After a verified call: Vibe's answer goes out, then the session closes for the call. */
+    private fun endForCall() {
+        main.postDelayed({
+            pausedForCall = false
+            if (inConversation) endConversation(resumeWake = false)
+        }, 700)
+    }
+
+    override suspend fun callAndVerify(number: String): String = withContext(Dispatchers.Main) {
+        pausedForCall = true
+        pauseAudio()
+        var r = PhoneActions.placeCall(this@VibeService, number)
+        // Some phones refuse to start a call from the lock screen: unlock (if allowed) and try once more.
+        if (r == "ok" && !waitForCall(8000) && isLocked() && canSelfUnlock()) {
+            VibeBus.event("লক থাকায় কল যায়নি — আনলক করে আবার চেষ্টা")
+            if (ensureUnlocked()) {
+                r = PhoneActions.placeCall(this@VibeService, number)
+                if (r == "ok") waitForCall(8000)
+            }
+        }
+        if (r == "ok" && inCall) {
+            VibeBus.event("কল শুরু হয়েছে ✓")
+            endForCall()
+            "ok"
+        } else {
+            pausedForCall = false
+            resumeAudio()
+            if (r != "ok") r
+            else "error: the phone did not go into a call within 8 seconds" +
+                (if (isLocked()) " (the phone is locked — ask the user to unlock, or turn on self-unlock in Vibe settings)" else "")
+        }
+    }
+
+    override suspend fun answerAndVerify(speaker: Boolean): String = withContext(Dispatchers.Main) {
+        pausedForCall = true
+        pauseAudio()
+        val r = PhoneActions.answer(this@VibeService, speaker)
+        if (r == "ok" && waitForCall(5000)) {
+            endForCall()
+            "ok"
+        } else {
+            pausedForCall = false
+            resumeAudio()
+            if (r != "ok") r else "error: the call did not connect"
+        }
+    }
+
     override fun showContactChoices(contacts: List<PhoneActions.Contact>) {
         main.post {
             if (!inConversation) return@post
@@ -1104,6 +1190,7 @@ class VibeService : Service(), GeminiLiveClient.Listener, ToolRunner.Host {
         }
         screenCalls.clear()
         VibeBus.controllingScreen = false
+        VibeAccessibility.instance?.hideShield()
         VibeBus.status.value = ""
         VibeBus.action("✋ কাজ থামানো হলো")
         VibeBus.event("তুমি কাজ থামিয়েছ")
