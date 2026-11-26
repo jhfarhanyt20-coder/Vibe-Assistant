@@ -1007,8 +1007,26 @@ class VibeService : Service(), GeminiLiveClient.Listener, ToolRunner.Host {
             if (pin != null && acc != null) {
                 VibeBus.event("সেভ করা PIN দিয়ে আনলক করছি")
                 VibeBus.action("🔓 আনলক করছি")
+                // 1. A dark screen shows no PIN pad: light it first.
+                if (!isScreenOn()) {
+                    @Suppress("DEPRECATION")
+                    getSystemService(PowerManager::class.java).newWakeLock(
+                        PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP, "vibe:unlock"
+                    ).acquire(4000)
+                }
                 delay(900) // the unlock screen (PIN pad) needs a moment to appear
-                if (!acc.typePin(pin)) VibeBus.event("PIN-এর বোতাম পাওয়া যায়নি — নিজে আনলক করো")
+                // 2. Still the clock face, no keypad? Swipe up, as a person would.
+                if (acc.pinKeys() == null) {
+                    VibeBus.event("PIN pad দেখা যাচ্ছে না — উপরে swipe করছি")
+                    acc.swipe("up")
+                    delay(900)
+                }
+                // 3. Type it — once.
+                if (acc.typePin(pin)) {
+                    VibeBus.event("PIN টাইপ হয়েছে")
+                } else {
+                    VibeBus.event("PIN-এর বোতাম পড়া যাচ্ছে না — এই ফোনের লক স্ক্রিন Vibe-কে দেখতে দিচ্ছে না। নিজে আনলক করো।")
+                }
             }
         }
         repeat(60) {

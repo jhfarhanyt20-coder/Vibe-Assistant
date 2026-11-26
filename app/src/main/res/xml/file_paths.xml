@@ -1,4 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths>
     <cache-path name="voice" path="voice/" />
+    <!-- Updates the app downloads itself (when Android's downloader fails). -->
+    <external-files-path name="updates" path="Download/" />
+    <files-path name="updates_internal" path="." />
 </paths>

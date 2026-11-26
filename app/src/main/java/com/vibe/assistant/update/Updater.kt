@@ -76,29 +76,55 @@ object Updater {
         return false
     }
 
+    /**
+     * The newest release. Asks the GitHub API first; if that answers with an error
+     * (404, rate limit, a blocked host), falls back to the plain web page, which
+     * redirects /releases/latest to /releases/tag/vX.Y.Z — the release script always
+     * names the APK Vibe-vX.Y.Z.apk, so the download link follows from the tag.
+     */
     suspend fun fetchLatest(): Release? = withContext(Dispatchers.IO) {
+        try {
+            fetchFromApi()?.let { return@withContext it }
+        } catch (_: Exception) {}
+        fetchFromWeb()
+    }
+
+    private fun fetchFromWeb(): Release? {
+        val req = Request.Builder()
+            .url("https://github.com/$REPO/releases/latest")
+            .header("User-Agent", "Vibe-Updater")
+            .build()
+        Http.rest.newCall(req).execute().use { r ->
+            val path = r.request.url.encodedPath // .../releases/tag/v0.7.4 after the redirect
+            val tag = Regex("/tag/v?([0-9][0-9.]*)").find(path)?.groupValues?.get(1)
+                ?: throw IllegalStateException("GitHub ${r.code}")
+            return Release(tag, "https://github.com/$REPO/releases/download/v$tag/Vibe-v$tag.apk",
+                "Vibe-v$tag.apk", "", 0)
+        }
+    }
+
+    private fun fetchFromApi(): Release? {
         val req = Request.Builder()
             .url("https://api.github.com/repos/$REPO/releases/latest")
             .header("Accept", "application/vnd.github+json")
             .header("User-Agent", "Vibe-Updater")
             .build()
         Http.rest.newCall(req).execute().use { r ->
-            if (r.code == 404) return@withContext null
-            if (!r.isSuccessful) throw IllegalStateException("GitHub ${r.code}")
+            if (!r.isSuccessful) throw IllegalStateException("GitHub API ${r.code}")
             val o = JSONObject(r.body?.string().orEmpty())
             val tag = o.optString("tag_name").removePrefix("v")
-            val assets = o.optJSONArray("assets") ?: return@withContext null
+            val assets = o.optJSONArray("assets") ?: return null
             for (i in 0 until assets.length()) {
                 val a = assets.optJSONObject(i) ?: continue
                 val name = a.optString("name")
                 if (name.endsWith(".apk", ignoreCase = true)) {
-                    return@withContext Release(
+                    return Release(
                         tag, a.optString("browser_download_url"), name,
                         o.optString("body"), (a.optLong("size") / 1_000_000L).toInt()
                     )
                 }
             }
-            null
+            return null
         }
     }
 
@@ -168,7 +194,10 @@ object Updater {
         return DownloadManager.STATUS_FAILED
     }
 
+    @Volatile private var current: Release? = null
+
     fun download(ctx: Context, rel: Release) {
+        current = rel
         val dm = ctx.getSystemService(DownloadManager::class.java)
         // Forget an older download of ours, so the folder does not fill with copies.
         val old = Prefs.updateDownloadId
@@ -228,8 +257,21 @@ object Updater {
                         break
                     }
                     DownloadManager.STATUS_FAILED -> {
-                        stage.value = Stage.FAILED
-                        status.value = "আপডেট নামানো যায়নি — ইন্টারনেট দেখে আবার চেষ্টা করো"
+                        var reason = 0
+                        dm.query(DownloadManager.Query().setFilterById(id))?.use { c ->
+                            if (c.moveToFirst()) reason = c.getInt(c.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON))
+                        }
+                        // Android's downloader gave up (it trips on some GitHub redirects): fetch it ourselves.
+                        val rel = current ?: Prefs.updateVersion.takeIf { it.isNotBlank() }?.let { v ->
+                            Release(v, "https://github.com/$REPO/releases/download/v$v/Vibe-v$v.apk", "Vibe-v$v.apk", "", 0)
+                        }
+                        if (rel != null) {
+                            status.value = "আরেকভাবে নামাচ্ছি… (কারণ: ${reasonText(reason)})"
+                            directDownload(ctx, rel)
+                        } else {
+                            stage.value = Stage.FAILED
+                            status.value = "আপডেট নামানো যায়নি (${reasonText(reason)})"
+                        }
                         break
                     }
                 }
@@ -239,8 +281,83 @@ object Updater {
         }
     }
 
+    private fun reasonText(code: Int): String = when (code) {
+        in 400..599 -> "সার্ভার $code"
+        DownloadManager.ERROR_INSUFFICIENT_SPACE -> "ফোনে জায়গা নেই"
+        DownloadManager.ERROR_TOO_MANY_REDIRECTS -> "অনেক redirect"
+        DownloadManager.ERROR_HTTP_DATA_ERROR -> "নেট কেটে গেছে"
+        DownloadManager.ERROR_CANNOT_RESUME -> "আবার শুরু করা গেল না"
+        else -> "কোড $code"
+    }
+
+    /** The APK fetched by the app itself (when Android's downloader fails). */
+    @Volatile private var directFile: java.io.File? = null
+
+    /**
+     * Downloads with the app's own HTTP client, which follows GitHub's redirects to
+     * its file servers. Saved in the app's own Download folder
+     * (Android/data/com.vibe.assistant/files/Download), then the installer opens.
+     */
+    private fun directDownload(ctx: Context, rel: Release) {
+        stage.value = Stage.DOWNLOADING
+        progress.value = 0
+        scope.launch {
+            try {
+                val dir = ctx.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: ctx.filesDir
+                dir.mkdirs()
+                dir.listFiles()?.filter { it.name.endsWith(".apk") }?.forEach { it.delete() }
+                val out = java.io.File(dir, rel.fileName)
+                val req = Request.Builder().url(rel.apkUrl).header("User-Agent", "Vibe-Updater").build()
+                Http.download.newCall(req).execute().use { r ->
+                    if (!r.isSuccessful) throw IllegalStateException("সার্ভার ${r.code}")
+                    val body = r.body ?: throw IllegalStateException("খালি উত্তর")
+                    val total = body.contentLength()
+                    body.byteStream().use { input ->
+                        out.outputStream().use { o ->
+                            val buf = ByteArray(64 * 1024)
+                            var read = 0L
+                            while (true) {
+                                val n = input.read(buf)
+                                if (n < 0) break
+                                o.write(buf, 0, n)
+                                read += n
+                                if (total > 0) progress.value = ((read * 100) / total).toInt().coerceIn(0, 100)
+                            }
+                        }
+                    }
+                }
+                directFile = out
+                progress.value = 100
+                stage.value = Stage.READY
+                status.value = "ভার্সন ${rel.version} নামানো শেষ — install করো"
+                withContext(Dispatchers.Main) { installFile(ctx, out, rel.version) }
+            } catch (e: Exception) {
+                stage.value = Stage.FAILED
+                status.value = "আপডেট নামানো যায়নি: ${e.message ?: "ইন্টারনেট দেখো"}"
+            }
+        }
+    }
+
+    private fun installFile(ctx: Context, file: java.io.File, version: String) {
+        val uri = androidx.core.content.FileProvider.getUriForFile(ctx, ctx.packageName + ".files", file)
+        if (!ctx.packageManager.canRequestPackageInstalls()) {
+            openInstallPermission(ctx)
+            notify(ctx, "আপডেট install করতে অনুমতি দাও",
+                "Vibe-কে “এই উৎস থেকে অ্যাপ install” করার অনুমতি দাও, তারপর এই নোটিফিকেশনে ট্যাপ করো।", installIntent(uri))
+            return
+        }
+        val i = installIntent(uri)
+        DeviceActions.launch(ctx, i)
+        notify(ctx, "Vibe $version আপডেট প্রস্তুত", "install করতে ট্যাপ করো", i)
+    }
+
     /** "Install" button: open the installer for the downloaded file again. */
     fun installNow(ctx: Context) {
+        val f = directFile
+        if (f != null && f.exists()) {
+            installFile(ctx.applicationContext, f, Prefs.updateVersion)
+            return
+        }
         val id = Prefs.updateDownloadId
         if (id >= 0) {
             offeredFor = -1L
@@ -317,7 +434,7 @@ class UpdateReceiver : BroadcastReceiver() {
                 ok = c.getInt(c.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS)) == DownloadManager.STATUS_SUCCESSFUL
             }
         }
+        // On failure the progress watcher switches to the app's own downloader; nothing to do here.
         if (ok) Updater.install(context, id)
-        else Updater.status.value = "আপডেট নামানো যায়নি — ইন্টারনেট দেখে আবার চেষ্টা করো"
     }
 }
