@@ -18,6 +18,14 @@ class VibeApp : Application() {
             Prefs.ownerVoice = null
             Prefs.unlockPin = null
         }
+        // v0.5: back to always-listening conversation once. Push-to-talk left on by
+        // accident makes Vibe hear nothing; the user can still turn it on again.
+        val sp = getSharedPreferences("vibe_migrations", MODE_PRIVATE)
+        if (!sp.getBoolean("v05_talk_reset", false)) {
+            Prefs.pushToTalk = false
+            Prefs.bargeIn = true
+            sp.edit().putBoolean("v05_talk_reset", true).apply()
+        }
         com.vibe.assistant.wake.VoskModels.warmUp(this)
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(

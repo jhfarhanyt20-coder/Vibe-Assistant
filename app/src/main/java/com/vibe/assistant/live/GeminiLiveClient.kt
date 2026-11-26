@@ -40,8 +40,8 @@ class GeminiLiveClient(
     val googleSearch: Boolean = false,
     /** When true the server does not detect speech; the app marks turns with activityStart/End. */
     val manualTurns: Boolean = false,
-    /** Shorter end-of-speech wait in automatic mode (falls back to server default if rejected). */
-    val quickTurns: Boolean = true,
+    /** Shorter end-of-speech wait. Off: it cut sentences short; the server default is better. */
+    val quickTurns: Boolean = false,
 ) {
     data class ToolCall(val id: String, val name: String, val args: JSONObject)
 

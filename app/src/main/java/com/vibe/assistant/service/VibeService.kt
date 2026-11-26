@@ -150,7 +150,9 @@ class VibeService : Service(), GeminiLiveClient.Listener, ToolRunner.Host {
     private var readyAt = 0L
     private var keyInUrl = false
     private var useSearch = true
-    private var useQuick = true
+    // The shorter end-of-speech wait cut people off mid-sentence; the server's own
+    // turn detection (what v0.1 used) understands the whole sentence. Kept off.
+    private var useQuick = false
     private val triedModels = mutableSetOf<String>()
     @Volatile private var lastActivity = 0L
     private var wakeLock: PowerManager.WakeLock? = null
@@ -353,7 +355,7 @@ class VibeService : Service(), GeminiLiveClient.Listener, ToolRunner.Host {
         readyAt = 0L
         keyInUrl = false
         useSearch = Prefs.googleSearch
-        useQuick = true
+        useQuick = false
         waitingForNet = false
         triedModels.clear()
         resumeHandle = null
