@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="vibe_bg">#FF0A0A12</color>
+    <color name="launcher_bg">#FF0B0A18</color>
+
+    <style name="Theme.Vibe" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/vibe_bg</item>
+        <item name="android:colorBackground">@color/vibe_bg</item>
+        <item name="android:colorAccent">#FF8B7BFF</item>
+        <item name="android:colorPrimary">#FF0A0A12</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:textColor">#FFF2F2F7</item>
+    </style>
+
+    <style name="Theme.Vibe.Lock" parent="Theme.Vibe">
+        <item name="android:windowShowWallpaper">false</item>
+    </style>
+</resources>

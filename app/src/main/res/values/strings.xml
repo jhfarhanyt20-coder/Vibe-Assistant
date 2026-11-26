@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Vibe</string>
+    <string name="accessibility_desc">Vibe তোমার ভয়েস কমান্ডে স্ক্রিন পড়ে, ট্যাপ করে, টাইপ করে আর অ্যাপ চালায়। শুধু তুমি কিছু করতে বললেই কাজ করে। চেপে ধরে কথা বলার জন্য ভলিউম-ডাউন বাটনও ব্যবহার করে।</string>
+</resources>

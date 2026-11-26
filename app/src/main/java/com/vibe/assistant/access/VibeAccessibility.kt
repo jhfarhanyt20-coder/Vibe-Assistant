@@ -1,0 +1,294 @@
+package com.vibe.assistant.access
+
+import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.GestureDescription
+import android.content.ComponentName
+import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.Path
+import android.graphics.Rect
+import android.media.AudioManager
+import android.os.Build
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
+import android.provider.Settings
+import android.util.Base64
+import android.view.Display
+import android.view.KeyEvent
+import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityNodeInfo
+import com.vibe.assistant.data.Prefs
+import com.vibe.assistant.service.VibeService
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.suspendCancellableCoroutine
+import java.io.ByteArrayOutputStream
+import kotlin.coroutines.resume
+
+/**
+ * Vibe's hands on the screen. The user turns this on in Accessibility settings;
+ * after that Vibe can read what is on screen, tap, type, scroll and press
+ * home/back — only when Gemini asks for it through a tool.
+ *
+ * It also lets you hold volume-down to talk (push-to-talk), even with the
+ * screen locked. A short press still changes the volume as normal.
+ */
+class VibeAccessibility : AccessibilityService() {
+
+    data class Screen(val pkg: String, val text: String, val nodes: List<AccessibilityNodeInfo>)
+
+    companion object {
+        @Volatile var instance: VibeAccessibility? = null
+            private set
+
+        fun isEnabled(ctx: Context): Boolean {
+            val want = ComponentName(ctx, VibeAccessibility::class.java).flattenToString()
+            val on = Settings.Secure.getString(ctx.contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES) ?: ""
+            return on.split(':').any { it.equals(want, ignoreCase = true) } || instance != null
+        }
+    }
+
+    private val main = Handler(Looper.getMainLooper())
+    @Volatile var lastEventAt = 0L
+        private set
+
+    override fun onServiceConnected() {
+        super.onServiceConnected()
+        instance = this
+    }
+
+    override fun onUnbind(intent: android.content.Intent?): Boolean {
+        instance = null
+        return super.onUnbind(intent)
+    }
+
+    override fun onDestroy() {
+        instance = null
+        super.onDestroy()
+    }
+
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        lastEventAt = SystemClock.uptimeMillis()
+    }
+
+    override fun onInterrupt() {}
+
+    // ── Push-to-talk on volume-down ──────────────────────────────────────────
+
+    private var volDownAt = 0L
+    private var pttStarted = false
+    private val startPtt = Runnable {
+        pttStarted = true
+        VibeService.send(this, VibeService.A_PTT_DOWN)
+    }
+
+    override fun onKeyEvent(event: KeyEvent): Boolean {
+        if (event.keyCode != KeyEvent.KEYCODE_VOLUME_DOWN) return false
+        if (!Prefs.pushToTalk || !Prefs.pttVolumeKey || !VibeService.isRunning) return false
+        when (event.action) {
+            KeyEvent.ACTION_DOWN -> if (event.repeatCount == 0) {
+                volDownAt = SystemClock.uptimeMillis()
+                pttStarted = false
+                main.postDelayed(startPtt, 300)
+            }
+            KeyEvent.ACTION_UP -> {
+                main.removeCallbacks(startPtt)
+                if (pttStarted) {
+                    pttStarted = false
+                    VibeService.send(this, VibeService.A_PTT_UP)
+                } else {
+                    // It was a short press: do what volume-down normally does.
+                    getSystemService(AudioManager::class.java).adjustSuggestedStreamVolume(
+                        AudioManager.ADJUST_LOWER, AudioManager.USE_DEFAULT_STREAM_TYPE, AudioManager.FLAG_SHOW_UI
+                    )
+                }
+            }
+        }
+        return true
+    }
+
+    // ── Reading the screen ───────────────────────────────────────────────────
+
+    /** Numbered list of what is visible and actionable, for the model. */
+    fun dump(max: Int = 160): Screen {
+        val root = rootInActiveWindow ?: return Screen("", "(স্ক্রিন পড়া যাচ্ছে না)", emptyList())
+        val nodes = mutableListOf<AccessibilityNodeInfo>()
+        val sb = StringBuilder()
+        val r = Rect()
+
+        fun labelOf(n: AccessibilityNodeInfo): String {
+            if (n.isPassword) return "••••"
+            val parts = listOfNotNull(
+                n.text?.toString(), n.contentDescription?.toString(),
+                if (Build.VERSION.SDK_INT >= 26) n.hintText?.toString() else null,
+            ).map { it.trim().replace('\n', ' ') }.filter { it.isNotEmpty() }.distinct()
+            return parts.joinToString(" | ").take(90)
+        }
+
+        fun childText(n: AccessibilityNodeInfo, depth: Int): String {
+            if (depth > 2) return ""
+            for (i in 0 until n.childCount) {
+                val c = n.getChild(i) ?: continue
+                val l = labelOf(c)
+                if (l.isNotEmpty()) return l
+                val d = childText(c, depth + 1)
+                if (d.isNotEmpty()) return d
+            }
+            return ""
+        }
+
+        fun walk(n: AccessibilityNodeInfo) {
+            if (!n.isVisibleToUser || nodes.size >= max) return
+            val clickable = n.isClickable || n.isLongClickable
+            var label = labelOf(n)
+            if (label.isEmpty() && clickable) label = childText(n, 0)
+            if (label.isNotEmpty() || clickable || n.isEditable || n.isScrollable) {
+                val id = nodes.size
+                nodes += n
+                n.getBoundsInScreen(r)
+                val cls = n.className?.toString()?.substringAfterLast('.') ?: "View"
+                val flags = buildList {
+                    if (clickable) add("tap")
+                    if (n.isEditable) add("edit")
+                    if (n.isScrollable) add("scroll")
+                    if (n.isCheckable) add(if (n.isChecked) "on" else "off")
+                    if (n.isSelected) add("selected")
+                    if (n.isFocused) add("focused")
+                    if (!n.isEnabled) add("disabled")
+                }
+                sb.append('[').append(id).append("] ").append(cls)
+                if (label.isNotEmpty()) sb.append(" \"").append(label).append('"')
+                if (flags.isNotEmpty()) sb.append(" (").append(flags.joinToString(",")).append(')')
+                sb.append(" @").append(r.centerX()).append(',').append(r.centerY()).append('\n')
+            }
+            for (i in 0 until n.childCount) n.getChild(i)?.let { walk(it) }
+        }
+        walk(root)
+        return Screen(root.packageName?.toString() ?: "", sb.toString(), nodes)
+    }
+
+    /** Waits until the screen stops changing (or a time limit passes). */
+    suspend fun settle(minMs: Long = 300, maxMs: Long = 2000) {
+        val start = SystemClock.uptimeMillis()
+        delay(minMs)
+        while (SystemClock.uptimeMillis() - start < maxMs) {
+            if (SystemClock.uptimeMillis() - lastEventAt > 350) return
+            delay(120)
+        }
+    }
+
+    // ── Acting ───────────────────────────────────────────────────────────────
+
+    fun tap(n: AccessibilityNodeInfo): Boolean {
+        var x: AccessibilityNodeInfo? = n
+        while (x != null && !x.isClickable) x = x.parent
+        if (x != null && x.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
+        val r = Rect()
+        n.getBoundsInScreen(r)
+        return tapAt(r.exactCenterX(), r.exactCenterY())
+    }
+
+    fun longPress(n: AccessibilityNodeInfo): Boolean {
+        var x: AccessibilityNodeInfo? = n
+        while (x != null && !x.isLongClickable) x = x.parent
+        if (x != null && x.performAction(AccessibilityNodeInfo.ACTION_LONG_CLICK)) return true
+        val r = Rect()
+        n.getBoundsInScreen(r)
+        return gesture(r.exactCenterX(), r.exactCenterY(), r.exactCenterX(), r.exactCenterY(), 700)
+    }
+
+    fun tapAt(x: Float, y: Float) = gesture(x, y, x, y, 60)
+
+    fun type(target: AccessibilityNodeInfo?, text: String, submit: Boolean): Boolean {
+        var n = target
+        if (n == null || !n.isEditable) n = rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+        if (n == null) return false
+        if (!n.isFocused) n.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+        val args = Bundle().apply {
+            putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
+        }
+        val ok = n.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+        if (ok && submit && Build.VERSION.SDK_INT >= 30) {
+            n.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id)
+        }
+        return ok
+    }
+
+    fun scroll(n: AccessibilityNodeInfo?, down: Boolean): Boolean {
+        var x: AccessibilityNodeInfo? = n
+        while (x != null && !x.isScrollable) x = x.parent
+        if (x != null) {
+            val act = if (down) AccessibilityNodeInfo.ACTION_SCROLL_FORWARD else AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
+            if (x.performAction(act)) return true
+        }
+        return swipe(if (down) "up" else "down")
+    }
+
+    /** Finger swipe in the given direction across the middle of the screen. */
+    fun swipe(direction: String): Boolean {
+        val m = resources.displayMetrics
+        val w = m.widthPixels.toFloat()
+        val h = m.heightPixels.toFloat()
+        return when (direction) {
+            "up" -> gesture(w / 2, h * 0.72f, w / 2, h * 0.28f, 320)
+            "down" -> gesture(w / 2, h * 0.28f, w / 2, h * 0.72f, 320)
+            "left" -> gesture(w * 0.85f, h / 2, w * 0.15f, h / 2, 280)
+            "right" -> gesture(w * 0.15f, h / 2, w * 0.85f, h / 2, 280)
+            else -> false
+        }
+    }
+
+    private fun gesture(x1: Float, y1: Float, x2: Float, y2: Float, ms: Long): Boolean {
+        val p = Path().apply {
+            moveTo(x1, y1)
+            lineTo(x2, y2)
+        }
+        val g = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(p, 0, ms))
+            .build()
+        return dispatchGesture(g, null, null)
+    }
+
+    fun global(action: String): Boolean {
+        val id = when (action) {
+            "home" -> GLOBAL_ACTION_HOME
+            "back" -> GLOBAL_ACTION_BACK
+            "recents" -> GLOBAL_ACTION_RECENTS
+            "notifications" -> GLOBAL_ACTION_NOTIFICATIONS
+            "quick_settings" -> GLOBAL_ACTION_QUICK_SETTINGS
+            "lock" -> GLOBAL_ACTION_LOCK_SCREEN
+            "screenshot" -> GLOBAL_ACTION_TAKE_SCREENSHOT
+            else -> return false
+        }
+        return performGlobalAction(id)
+    }
+
+    /** A small JPEG of the screen, base64 — for screens with no readable text (Android 11+). */
+    suspend fun screenshotJpeg(): String? {
+        if (Build.VERSION.SDK_INT < 30) return null
+        val bmp: Bitmap = suspendCancellableCoroutine<Bitmap?> { cont ->
+            try {
+                takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor, object : TakeScreenshotCallback {
+                    override fun onSuccess(result: ScreenshotResult) {
+                        val hw = Bitmap.wrapHardwareBuffer(result.hardwareBuffer, result.colorSpace)
+                        val soft = hw?.copy(Bitmap.Config.ARGB_8888, false)
+                        result.hardwareBuffer.close()
+                        if (cont.isActive) cont.resume(soft)
+                    }
+
+                    override fun onFailure(errorCode: Int) {
+                        if (cont.isActive) cont.resume(null)
+                    }
+                })
+            } catch (_: Exception) {
+                if (cont.isActive) cont.resume(null)
+            }
+        } ?: return null
+        val scale = 720f / bmp.width
+        val small = if (scale < 1f) Bitmap.createScaledBitmap(bmp, 720, (bmp.height * scale).toInt(), true) else bmp
+        val out = ByteArrayOutputStream()
+        small.compress(Bitmap.CompressFormat.JPEG, 60, out)
+        return Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
+    }
+}
