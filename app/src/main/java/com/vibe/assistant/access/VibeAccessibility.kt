@@ -128,9 +128,37 @@ class VibeAccessibility : AccessibilityService() {
 
     // ── Reading the screen ───────────────────────────────────────────────────
 
-    /** Numbered list of what is visible and actionable, for the model. */
-    fun dump(max: Int = 160): Screen {
-        val root = rootInActiveWindow ?: return Screen("", "(স্ক্রিন পড়া যাচ্ছে না)", emptyList())
+    /**
+     * Every window that is showing, top-most first: pop-up menus, dialogs, bottom
+     * sheets, share sheets and system permission prompts each live in a window of
+     * their own ABOVE the app. Reading only the active window misses them.
+     * Vibe's own windows (bubble, shield) and the keyboard are left out.
+     */
+    private fun visibleWindows(): List<Pair<android.view.accessibility.AccessibilityWindowInfo?, AccessibilityNodeInfo>> {
+        val out = mutableListOf<Pair<android.view.accessibility.AccessibilityWindowInfo?, AccessibilityNodeInfo>>()
+        try {
+            for (w in windows.orEmpty().sortedByDescending { it.layer }) {
+                if (w.type != android.view.accessibility.AccessibilityWindowInfo.TYPE_APPLICATION &&
+                    w.type != android.view.accessibility.AccessibilityWindowInfo.TYPE_SYSTEM
+                ) continue
+                val wr = w.root ?: continue
+                val pkg = wr.packageName?.toString().orEmpty()
+                if (pkg == packageName) continue
+                // System UI's own bars (status/navigation) are noise; its dialogs are not.
+                if (pkg == "com.android.systemui" && w.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_SYSTEM &&
+                    !w.isFocused && wr.childCount <= 2
+                ) continue
+                out += w to wr
+            }
+        } catch (_: Exception) {}
+        if (out.isEmpty()) rootInActiveWindow?.let { out += null to it }
+        return out
+    }
+
+    /** Numbered list of what is visible and actionable, for the model. Pop-ups come first. */
+    fun dump(max: Int = 180): Screen {
+        val wins = visibleWindows()
+        if (wins.isEmpty()) return Screen("", "(স্ক্রিন পড়া যাচ্ছে না)", emptyList())
         val nodes = mutableListOf<AccessibilityNodeInfo>()
         val sb = StringBuilder()
         val r = Rect()
@@ -182,23 +210,25 @@ class VibeAccessibility : AccessibilityService() {
             }
             for (i in 0 until n.childCount) n.getChild(i)?.let { walk(it) }
         }
-        walk(root)
-        // Sparse? The real content is probably in another window (a dialog, a
-        // share sheet, a permission pop-up): read the other app windows too.
-        if (nodes.size <= 3) {
-            try {
-                for (w in windows.orEmpty()) {
-                    if (w.type != android.view.accessibility.AccessibilityWindowInfo.TYPE_APPLICATION &&
-                        w.type != android.view.accessibility.AccessibilityWindowInfo.TYPE_SYSTEM
-                    ) continue
-                    val wr = w.root ?: continue
-                    if (wr.packageName?.toString() == packageName) continue // our own bubble
-                    if (wr == root) continue
-                    walk(wr)
+        val active = rootInActiveWindow
+        val many = wins.size > 1
+        for ((i, pair) in wins.withIndex()) {
+            val (w, wr) = pair
+            if (nodes.size >= max) break
+            if (many) {
+                val p = wr.packageName?.toString().orEmpty()
+                val kind = when {
+                    i == 0 && wr != active -> "POP-UP / DIALOG ON TOP — deal with this first"
+                    i == 0 -> "TOP WINDOW"
+                    else -> "window underneath (covered)"
                 }
-            } catch (_: Exception) {}
+                val title = if (Build.VERSION.SDK_INT >= 24) w?.title?.toString()?.takeIf { it.isNotBlank() }?.let { " \"$it\"" }.orEmpty() else ""
+                sb.append("--- ").append(kind).append(": ").append(p).append(title).append(" ---\n")
+            }
+            walk(wr)
         }
-        return Screen(root.packageName?.toString() ?: "", sb.toString(), nodes)
+        val topPkg = wins.first().second.packageName?.toString()
+        return Screen(active?.packageName?.toString() ?: topPkg.orEmpty(), sb.toString(), nodes)
     }
 
     /** Waits until the screen stops changing (or a time limit passes). */

@@ -186,6 +186,14 @@ object Prefs {
         get() = sp.getBoolean("show_transcript", false)
         set(v) = sp.edit().putBoolean("show_transcript", v).apply()
 
+    /**
+     * Ask "পাঠাবো?" before sending SMS / WhatsApp / voice messages. Off by default:
+     * the user wants a direction carried out start to finish without questions.
+     */
+    var askBeforeSend: Boolean
+        get() = sp.getBoolean("ask_before_send", false)
+        set(v) = sp.edit().putBoolean("ask_before_send", v).apply()
+
     /** Who built Vibe — what it answers to "who made you?". */
     var creatorName: String
         get() = sp.getString("creator_name", "") ?: ""

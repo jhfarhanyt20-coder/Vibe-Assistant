@@ -128,21 +128,24 @@ class ToolRunner(private val ctx: Context, private val host: Host) {
 
     /**
      * When a shortcut did not provably work, finish the job by looking at the screen
-     * — and keep at it: up to 3 rounds (each a fresh look, told why the last one
-     * failed) until it is verified done, it needs the user, or the user presses Stop.
+     * — and keep at it: up to 5 rounds of 25 steps (each a fresh look, told why the
+     * last one failed) until it is verified done, it truly needs the user, or the
+     * user presses Stop. A passing network/quota hiccup waits and tries again.
      */
     private suspend fun finishByScreen(goal: String): JSONObject {
         if (VibeAccessibility.instance == null) {
             return err("NOT DONE. Screen control (Accessibility) is off, so Vibe could not finish it. Ask the user to turn it on.")
         }
         var last = ""
-        for (round in 1..3) {
+        for (round in 1..5) {
             VibeBus.status.value = if (round == 1) "স্ক্রিন দেখে দেখে করছি…" else "আবার চেষ্টা করছি ($round)…"
             val g = if (round == 1) goal else "$goal\n(Previous attempt did not finish: ${last.take(200)}. Try a different way.)"
             last = agent.run(g, maxSteps = 25) { note -> VibeBus.status.value = note }
-            if (last.startsWith("done") || last.startsWith("need_user") || last.startsWith("stopped") ||
-                last.startsWith("error")
-            ) break
+            if (last.startsWith("done") || last.startsWith("need_user") || last.startsWith("stopped")) break
+            if (last.startsWith("error")) {
+                if ("API key" in last || "স্ক্রিন কন্ট্রোল বন্ধ" in last) break
+                kotlinx.coroutines.delay(3000) // network / busy model — wait and go again
+            }
         }
         VibeBus.status.value = ""
         return res(last)
@@ -172,7 +175,7 @@ class ToolRunner(private val ctx: Context, private val host: Host) {
                 val confirmed = a.optBoolean("confirmed", false)
                 if (PhoneActions.looksLikeNumber(to)) {
                     if (host.isLocked()) return@withContext err("While the phone is locked Vibe only calls saved contacts. Ask the user to unlock, or say the contact's name.")
-                    if (!confirmed) return@withContext ok("needs_confirmation: read the number back digit by digit and ask the user to confirm, then call again with confirmed=true.")
+                    if (Prefs.askBeforeSend && !confirmed) return@withContext ok("needs_confirmation: read the number back digit by digit and ask the user to confirm, then call again with confirmed=true.")
                     return@withContext callSoon(to, to)
                 }
                 val list = try {
@@ -241,7 +244,7 @@ class ToolRunner(private val ctx: Context, private val host: Host) {
                         else -> list.first()
                     }
                 }
-                if (!a.optBoolean("confirmed", false)) {
+                if (Prefs.askBeforeSend && !a.optBoolean("confirmed", false)) {
                     return@withContext ok("needs_confirmation: Read back to the user: to ${target.name} (${target.number}), message: \"$msg\". Ask 'পাঠাবো?' and only after a clear yes call send_sms again with confirmed=true.")
                 }
                 VibeBus.action("✉️ SMS → ${target.name}: $msg")
@@ -264,7 +267,7 @@ class ToolRunner(private val ctx: Context, private val host: Host) {
                     is Target.Reply -> return@withContext r.json
                     is Target.One -> r.c
                 }
-                if (!a.optBoolean("confirmed", false)) {
+                if (Prefs.askBeforeSend && !a.optBoolean("confirmed", false)) {
                     return@withContext ok("needs_confirmation: Read back: WhatsApp to ${t.name}: \"$msg\". Ask 'পাঠাবো?' and only after a clear yes call again with confirmed=true.")
                 }
                 unlocked()?.let { return@withContext it }
@@ -287,7 +290,7 @@ class ToolRunner(private val ctx: Context, private val host: Host) {
                     is Target.Reply -> return@withContext r.json
                     is Target.One -> r.c
                 }
-                if (!a.optBoolean("confirmed", false)) {
+                if (Prefs.askBeforeSend && !a.optBoolean("confirmed", false)) {
                     return@withContext ok("needs_confirmation: Read back: a voice message in your (Vibe's) voice to ${t.name} on $app saying: \"$msg\". Ask 'পাঠাবো?' and only after a clear yes call again with confirmed=true.")
                 }
                 unlocked()?.let { return@withContext it }

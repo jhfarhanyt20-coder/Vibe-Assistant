@@ -124,6 +124,12 @@ class SettingsActivity : ComponentActivity() {
             ) { Prefs.pttVolumeKey = it })
             addView(divider())
             addView(switchRow(
+                "পাঠানোর আগে জিজ্ঞেস করবে",
+                "চালু করলে SMS / WhatsApp / voice message পাঠানোর আগে Vibe পড়ে শোনাবে আর “পাঠাবো?” জিজ্ঞেস করবে। বন্ধ থাকলে বললেই সরাসরি পাঠিয়ে দেবে।",
+                { Prefs.askBeforeSend }
+            ) { Prefs.askBeforeSend = it })
+            addView(divider())
+            addView(switchRow(
                 "কথার মাঝে থামানো যাবে",
                 "Vibe বলার সময় তুমি কথা বললে সে থেমে শুনবে। স্পিকারে বারবার নিজে থেকেই থেমে গেলে এটা বন্ধ করো।",
                 { Prefs.bargeIn }

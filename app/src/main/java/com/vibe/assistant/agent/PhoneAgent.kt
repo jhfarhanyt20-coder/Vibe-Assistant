@@ -224,13 +224,20 @@ Actions:
 - scroll (id of a scrollable list or none, direction down|up) / swipe (direction)
 - back / home / open_app (app name) / wait
 - done (summary: one short Bangla sentence of what was achieved)
-- ask_user (question: when you need the user to choose or confirm)
-- fail (reason)
+- ask_user (question) — ONLY when it is impossible to go on without the user: a payment, a password/OTP,
+  or two equally likely people/items to choose between. For normal choices, decide yourself sensibly.
+- fail (reason) — ONLY when the task is truly impossible here (app not installed, feature does not exist).
+  A step that didn't work is not a failure: try another way (back, scroll, search, a different button).
 
 Rules:
 - Prefer open_app to reach an app, then work inside it. Use the search features of apps.
 - Prefer elements whose labels match the goal; pick the element id exactly from the list.
 - Look at the screenshot every step and confirm the last action worked before moving on.
+- POP-UPS: when the list starts with "POP-UP / DIALOG ON TOP", that window covers the screen — handle it first
+  (choose the option the goal needs, confirm "Send"/"OK"/"Allow", or close it with "Cancel"/"Not now"/back),
+  and only then continue underneath. Pop-ups, menus and sheets can open one after another; check every new screen.
+- Work like a person using the phone: tap, look, scroll to find things, go back if a screen is wrong.
+  Carry out the whole direction yourself, step after step, without asking the user anything.
 - Use done ONLY when the screen visibly proves the goal: for messages, your message must be visible as a
   sent bubble in the right person's chat. Typing it is not sending it — after typing, tap the Send button
   (arrow / paper-plane icon, usually right of the text box) and check the bubble appears.
