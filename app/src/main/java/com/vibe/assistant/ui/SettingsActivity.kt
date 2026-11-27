@@ -60,6 +60,11 @@ class SettingsActivity : ComponentActivity() {
     private lateinit var agentKeyText: TextView
     private lateinit var agentModelField: AutoCompleteTextView
     private lateinit var agentStatus: TextView
+    private lateinit var home: LinearLayout
+    private lateinit var pageHolder: LinearLayout
+    private lateinit var titleView: TextView
+    private lateinit var scroll: ScrollView
+    private var openPage: LinearLayout? = null
 
     private val phoneLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { renderPermissions() }
@@ -81,18 +86,37 @@ class SettingsActivity : ComponentActivity() {
             scaleType = ImageView.ScaleType.CENTER
             background = ripple(null, rounded(Color.WHITE, dpf(22f)))
             isClickable = true
-            setOnClickListener { finish() }
+            setOnClickListener { goBack() }
         }, LinearLayout.LayoutParams(dp(44), dp(44)))
-        bar.addView(label("সেটিংস", 22f, VC.TEXT, VC.bold), lp(0).apply { weight = 1f }.margins(l = dp(6)))
+        titleView = label("সেটিংস", 22f, VC.TEXT, VC.bold)
+        bar.addView(titleView, lp(0).apply { weight = 1f }.margins(l = dp(6)))
         root.addView(bar)
 
-        val scroll = ScrollView(this)
-        val col = LinearLayout(this).apply {
+        scroll = ScrollView(this)
+        val outer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(16), dp(4), dp(16), dp(28))
         }
-        scroll.addView(col)
+        home = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        pageHolder = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        outer.addView(home)
+        outer.addView(pageHolder)
+        scroll.addView(outer)
         root.addView(scroll, lp(h = 0).apply { weight = 1f })
+
+        onBackPressedDispatcher.addCallback(this, object : androidx.activity.OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() = goBack()
+        })
+
+        // Categories: the home list shows only these; each opens its own short page.
+        home.addView(label("কী বদলাতে চাও?", 13.5f, VC.FAINT), lp().margins(t = dp(6), b = dp(12)))
+        val pTalk = newPage("🗣", "কথা ও কণ্ঠ", "কথা বলার ধরন, কণ্ঠ, কাছের কণ্ঠ, কল SIM")
+        val pBehave = newPage("⚙️", "আচরণ", "হেই Vibe, ভাসমান বাটন, লক স্ক্রিন, Google Search")
+        val pAi = newPage("🤖", "AI ও মডেল", "Gemini key, Live মডেল, কাজের AI")
+        val pId = newPage("👤", "পরিচয় ও মেমোরি", "তোমার নাম, কে বানিয়েছে, যা মনে রেখেছে")
+        val pSafe = newPage("🔒", "আনলক ও অনুমতি", "নিজে আনলক (PIN), দরকারি অনুমতি")
+        val pMore = newPage("⬆️", "আপডেট ও লগ", "নতুন ভার্সন, সংযোগের লগ")
+        var col = pAi
 
         // ── API key ──
         col.addView(section("Gemini API key"))
@@ -108,6 +132,7 @@ class SettingsActivity : ComponentActivity() {
             addView(row, lp().margins(t = dp(14)))
         })
 
+        col = pId
         // ── Identity ──
         col.addView(section("পরিচয়"))
         col.addView(card().apply {
@@ -119,6 +144,7 @@ class SettingsActivity : ComponentActivity() {
                 12.5f, VC.FAINT), lp().margins(t = dp(8)))
         })
 
+        col = pTalk
         // ── How you talk ──
         col.addView(section("কথা বলার ধরন"))
         modeList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -181,6 +207,7 @@ class SettingsActivity : ComponentActivity() {
         col.addView(voiceList)
         col.addView(label("নতুন কণ্ঠ পরের কথোপকথন থেকে শোনা যাবে।", 12.5f, VC.FAINT), lp().margins(t = dp(4)))
 
+        col = pAi
         // ── Model ──
         col.addView(section("Live মডেল"))
         modelList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -188,6 +215,7 @@ class SettingsActivity : ComponentActivity() {
         col.addView(smallButton("এই key-তে কোন মডেল আছে, আবার দেখো") { refreshModels() },
             lp(ViewGroup.LayoutParams.WRAP_CONTENT).margins(t = dp(4)))
 
+        col = pBehave
         // ── Behaviour ──
         col.addView(section("আচরণ"))
         col.addView(card().apply {
@@ -250,6 +278,7 @@ class SettingsActivity : ComponentActivity() {
                 lp().margins(t = dp(4)))
         })
 
+        col = pSafe
         // ── Self-unlock ──
         col.addView(section("নিজে আনলক"))
         col.addView(card().apply {
@@ -267,6 +296,7 @@ class SettingsActivity : ComponentActivity() {
             addView(smallButton("PIN দাও / বদলাও") { askPin() }, lp(ViewGroup.LayoutParams.WRAP_CONTENT).margins(t = dp(10)))
         })
 
+        col = pId
         // ── Memory ──
         col.addView(section("মেমোরি — যা Vibe মনে রেখেছে"))
         col.addView(card().apply {
@@ -290,6 +320,7 @@ class SettingsActivity : ComponentActivity() {
             addView(row, lp().margins(t = dp(10)))
         })
 
+        col = pAi
         // ── Screen-task AI ──
         col.addView(section("কাজের AI (স্ক্রিন দেখে কাজ)"))
         col.addView(card().apply {
@@ -338,11 +369,13 @@ class SettingsActivity : ComponentActivity() {
         })
         renderAgent()
 
+        col = pSafe
         // ── Permissions ──
         col.addView(section("অনুমতি"))
         permList = card()
         col.addView(permList)
 
+        col = pMore
         // ── Log ──
         col.addView(section("সংযোগের লগ"))
         col.addView(card().apply {
@@ -351,6 +384,7 @@ class SettingsActivity : ComponentActivity() {
             addView(logText, lp().margins(t = dp(8)))
         })
 
+        col = pMore
         // ── Update ──
         col.addView(section("আপডেট"))
         col.addView(card().apply {
@@ -367,7 +401,8 @@ class SettingsActivity : ComponentActivity() {
             ) { Prefs.autoUpdate = it })
         })
 
-        // ── Footer ──
+        // ── Footer (on the home list) ──
+        col = home
         col.addView(secondaryButton("Vibe পুরো বন্ধ করো") {
             VibeService.send(this, VibeService.A_QUIT)
             Toast.makeText(this, "Vibe বন্ধ হলো। অ্যাপ খুললে আবার চালু হবে।", Toast.LENGTH_LONG).show()
@@ -405,6 +440,51 @@ class SettingsActivity : ComponentActivity() {
         renderModes()
         syncSwitches()
         renderPermissions()
+    }
+
+    // ── Category pages ───────────────────────────────────────────────────────
+
+    private fun newPage(icon: String, title: String, desc: String): LinearLayout {
+        val page = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+        }
+        pageHolder.addView(page)
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(16), dp(14), dp(14), dp(14))
+            val r = dpf(20f)
+            background = ripple(rounded(VC.CARD, r, VC.STROKE, dp(1)), rounded(Color.WHITE, r))
+            isClickable = true
+            setOnClickListener { showPage(page, title) }
+        }
+        row.addView(label(icon, 22f, VC.TEXT, gravity = Gravity.CENTER), LinearLayout.LayoutParams(dp(40), dp(40)))
+        val text = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        text.addView(label(title, 16.5f, VC.TEXT, VC.medium))
+        text.addView(label(desc, 12.5f, VC.FAINT), lp().margins(t = dp(2)))
+        row.addView(text, lp(0).apply { weight = 1f }.margins(l = dp(10), r = dp(8)))
+        row.addView(label("›", 24f, VC.SUB))
+        home.addView(row, lp().margins(b = dp(10)))
+        return page
+    }
+
+    private fun showPage(page: LinearLayout, title: String) {
+        home.visibility = View.GONE
+        for (i in 0 until pageHolder.childCount) pageHolder.getChildAt(i).visibility = View.GONE
+        page.visibility = View.VISIBLE
+        openPage = page
+        titleView.text = title
+        scroll.scrollTo(0, 0)
+    }
+
+    private fun goBack() {
+        if (openPage == null) return finish()
+        openPage?.visibility = View.GONE
+        openPage = null
+        home.visibility = View.VISIBLE
+        titleView.text = "সেটিংস"
+        scroll.scrollTo(0, 0)
     }
 
     // ── Key ──────────────────────────────────────────────────────────────────

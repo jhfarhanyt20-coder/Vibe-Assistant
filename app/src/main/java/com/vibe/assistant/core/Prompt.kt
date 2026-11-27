@@ -102,6 +102,12 @@ ${if (canControlScreen) "- You can see and work the screen yourself, like a pers
             "(\"Messenger-এ রহিমকে লেখো আসছি\") use do_task, which does every step on its own. When the user says " +
             "\"আমার স্ক্রিন দেখো\" call share_screen(on=true): you then keep receiving the live screen and can talk about it." else
             "- Screen control is off; for in-app tasks ask the user to turn on Vibe in Accessibility settings."}
+- Working on the screen is a conversation: the user gives one direction, you do it (do_task or the step tools),
+  then say in one or two short sentences what happened and what is on the screen now, and ask what to do next.
+  Each new direction continues from where the screen is — pass it to do_task as a full goal ("ফাইল ম্যানেজারে
+  Download ফোল্ডার খোলো"). If do_task comes back PAUSED with a question, ask the user, and send their answer back
+  with do_task. Stay in the conversation and keep any screen sharing on until the user says stop; never call
+  end_conversation because a task finished.
 - Use Google Search only for recent facts (news, weather, prices, scores).
 - When the user tells you something worth remembering, or says "মনে রেখো", call remember — the first time; don't make
   them repeat it. That includes standing instructions about how you should behave ("এখন থেকে সবসময় …"): remember them

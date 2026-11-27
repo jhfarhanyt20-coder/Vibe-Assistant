@@ -108,8 +108,38 @@ class ToolRunner(private val ctx: Context, private val host: Host) {
         s.startsWith("failed") || s.startsWith("stopped") ->
             err("NOT DONE. " + s.substringAfter(':').trim() + " Tell the user honestly it did not work.")
         s.startsWith("need_user") ->
-            ok("NOT DONE YET — needs the user: " + s.substringAfter(':').trim())
+            ok("PAUSED — the screen AI needs the user's decision: " + s.substringAfter(':').trim() +
+                " Ask the user this in short Bangla, wait for the answer, then call do_task again with the goal " +
+                "and their answer. The screen stays where it is.")
+        s.startsWith("done") ->
+            ok(s + " — Tell the user in one or two short Bangla sentences what was done and what is on the " +
+                "screen now, then ask what to do next (\"এখন কী করব?\"). Keep the conversation going.")
         else -> ok(s)
+    }
+
+    /**
+     * What the screen AI did earlier in this conversation, so "ফাইল ম্যানেজার খোলো" followed by
+     * "এখন Download ফোল্ডারে যাও" is one continuing job, not two strangers. Kept 15 minutes.
+     */
+    private data class PastTask(val goal: String, val result: String, val at: Long)
+    private val pastTasks = ArrayDeque<PastTask>()
+
+    private fun rememberTask(goal: String, result: String) {
+        synchronized(pastTasks) {
+            pastTasks.addLast(PastTask(goal.take(300), result.take(300), System.currentTimeMillis()))
+            while (pastTasks.size > 6) pastTasks.removeFirst()
+        }
+    }
+
+    private fun withHistory(goal: String): String {
+        val cutoff = System.currentTimeMillis() - 15 * 60_000L
+        val recent = synchronized(pastTasks) { pastTasks.filter { it.at > cutoff } }
+        if (recent.isEmpty()) return goal
+        return buildString {
+            append(goal)
+            append("\n\nEARLIER IN THIS CONVERSATION (the user is continuing from here; the phone screen is where the last task left it):\n")
+            recent.forEach { append("- asked: ").append(it.goal).append(" → ").append(it.result).append('\n') }
+        }
     }
 
     /**
@@ -143,7 +173,7 @@ class ToolRunner(private val ctx: Context, private val host: Host) {
         var last = ""
         for (round in 1..5) {
             VibeBus.status.value = if (round == 1) "স্ক্রিন দেখে দেখে করছি…" else "আবার চেষ্টা করছি ($round)…"
-            val g = if (round == 1) goal else "$goal\n(Previous attempt did not finish: ${last.take(200)}. Try a different way.)"
+            val g = withHistory(if (round == 1) goal else "$goal\n(Previous attempt did not finish: ${last.take(200)}. Try a different way.)")
             last = agent.run(g, maxSteps = 25) { note -> VibeBus.status.value = note }
             if (last.startsWith("done") || last.startsWith("need_user") || last.startsWith("stopped")) break
             if (last.startsWith("error")) {
@@ -152,6 +182,7 @@ class ToolRunner(private val ctx: Context, private val host: Host) {
             }
         }
         VibeBus.status.value = ""
+        rememberTask(goal, last)
         return res(last)
     }
 

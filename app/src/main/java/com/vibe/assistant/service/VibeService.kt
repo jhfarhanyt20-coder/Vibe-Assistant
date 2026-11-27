@@ -1168,13 +1168,24 @@ class VibeService : Service(), GeminiLiveClient.Listener, ToolRunner.Host {
         if (shareJob?.isActive == true) return null
         VibeBus.screenSharing.value = true
         shareJob = scope.launch {
-            val started = SystemClock.elapsedRealtime()
             var lastSent = 0L
             var lastSeen = -1L
             var lastBlocked = false
-            while (inConversation && VibeBus.screenSharing.value &&
-                SystemClock.elapsedRealtime() - started < 10 * 60_000L
-            ) {
+            var wasControlling = false
+            // No time limit: sharing stays on until the user says stop or the conversation ends.
+            while (inConversation && VibeBus.screenSharing.value) {
+                // While Vibe itself is tapping through a task, the frames would only make the
+                // model talk over the work; pause them and send one fresh frame when it ends.
+                if (VibeBus.controllingScreen) {
+                    wasControlling = true
+                    delay(300)
+                    continue
+                }
+                if (wasControlling) {
+                    wasControlling = false
+                    lastSent = 0L
+                    lastSeen = -1L
+                }
                 val acc = VibeAccessibility.instance
                 val now = SystemClock.elapsedRealtime()
                 val marker = if (accessibilityShots()) acc?.lastEventAt ?: 0L else ScreenProjector.frameAt
