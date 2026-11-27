@@ -33,7 +33,7 @@ import java.util.concurrent.TimeUnit
 class LiveConversationTest {
     private val key: String? = System.getenv("VIBE_TEST_KEY")?.trim()?.takeIf { it.length > 20 }
         ?: File("test-key.txt").takeIf { it.exists() }?.readText()?.trim()?.takeIf { it.length > 20 }
-    private val model = System.getenv("VIBE_TEST_MODEL") ?: "models/gemini-3.1-flash-live-preview"
+    private val model = System.getenv("VIBE_TEST_MODEL") ?: "models/gemini-3.8-live"
     private val http = OkHttpClient.Builder().readTimeout(0, TimeUnit.MILLISECONDS).build()
     private val report = StringBuilder()
 

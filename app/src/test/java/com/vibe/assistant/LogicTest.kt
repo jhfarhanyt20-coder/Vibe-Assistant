@@ -49,6 +49,51 @@ class LogicTest {
         assertTrue(F.score("Rahim", "Rahim")!! < F.score("Rahim", "Rahima")!!) // exact beats near
     }
 
+    /** 50 ms of 16 kHz PCM: a sine of the given loudness (amplitude), or noise. */
+    private fun chunk(amp: Int, noise: Boolean = false, seed: Int = 0): ByteArray {
+        val r = java.util.Random(seed.toLong())
+        val b = ByteArray(1600)
+        for (i in 0 until 800) {
+            val v = if (noise) (r.nextGaussian() * amp).toInt() else (amp * kotlin.math.sin(i * 0.3)).toInt()
+            val s = v.coerceIn(-32768, 32767)
+            b[2 * i] = (s and 0xFF).toByte()
+            b[2 * i + 1] = ((s shr 8) and 0xFF).toByte()
+        }
+        return b
+    }
+
+    private fun isSilence(b: ByteArray) = b.all { it == 0.toByte() }
+
+    @Test fun nearVoiceGateKeepsTheCloseVoiceAndDropsTheRoom() {
+        val g = com.vibe.assistant.audio.NearVoiceGate()
+        var t = 0L
+        // 2 s of a noisy room with a far-away voice (quiet) — must become silence.
+        repeat(40) { i ->
+            val out = g.process(chunk(300, noise = true, seed = i), t); t += 50
+            assertTrue("room noise leaked at chunk $i", out.all(::isSilence))
+        }
+        // The person at the phone speaks (loud) — must pass, with the lead-in (pre-roll).
+        val first = g.process(chunk(5000), t); t += 50
+        assertTrue("near voice did not pass", first.any { !isSilence(it) })
+        assertTrue("lead-in missing", first.size > 1)
+        repeat(10) { g.process(chunk(5000), t); t += 50 }
+        // A short pause inside the sentence stays open (no clipped words)…
+        val pause = g.process(chunk(300, noise = true, seed = 99), t + 200)
+        assertTrue("short pause was cut", pause.none(::isSilence))
+        // …but a long silence closes again.
+        val later = g.process(chunk(300, noise = true, seed = 98), t + 2000)
+        assertTrue("gate stayed open", later.all(::isSilence))
+    }
+
+    @Test fun newestLiveModelIsPreferredAndThinkingModelsLast() {
+        val ordered = com.vibe.assistant.data.KeyChecker.orderModels(listOf(
+            "models/gemini-3.1-flash-live-preview", "models/gemini-3.8-live-extended-thinking",
+            "models/gemini-3.8-live", "models/gemini-2.5-flash-native-audio-preview-12-2025",
+        ))
+        assertEquals("models/gemini-3.8-live", ordered.first())
+        assertEquals("models/gemini-3.8-live-extended-thinking", ordered.last())
+    }
+
     @Test fun pinsNeverGoIntoMemory() {
         val M = com.vibe.assistant.core.Memory
         assertTrue(M.isSecret("আমার ফোনের পিন 4821"))

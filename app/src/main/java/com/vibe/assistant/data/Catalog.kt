@@ -41,14 +41,23 @@ val VOICES: List<VoiceInfo> = listOf(
 
 data class LiveModel(val id: String, val label: String, val note: String)
 
-/** Known Live models, best first. The same pair Mark-LVII uses. */
+/**
+ * Known Live models, best first. Google's model list (Nov 2026): Gemini 3.8 Live is
+ * "the default option for most low-latency voice agent experiences and real-time
+ * dialogue without reasoning delays"; 3.1 Flash Live Preview is marked legacy.
+ */
 val LIVE_MODELS: List<LiveModel> = listOf(
-    LiveModel("models/gemini-3.1-flash-live-preview", "Gemini 3.1 Flash Live", "নতুন, সবচেয়ে দ্রুত"),
+    LiveModel("models/gemini-3.8-live", "Gemini 3.8 Live", "সবচেয়ে দ্রুত উত্তর — Google-এর সুপারিশ করা"),
+    LiveModel("models/gemini-3.1-flash-live-preview", "Gemini 3.1 Flash Live", "আগের মডেল (Google বলছে legacy)"),
     LiveModel(
         "models/gemini-2.5-flash-native-audio-preview-12-2025",
-        "Gemini 2.5 Native Audio", "আগের মডেল, বিকল্প হিসেবে ভালো"
+        "Gemini 2.5 Native Audio", "পুরনো, বিকল্প হিসেবে"
     ),
+    LiveModel("models/gemini-3.8-live-extended-thinking", "Gemini 3.8 Live (বেশি চিন্তা)", "বুদ্ধিমান কিন্তু উত্তর দিতে দেরি করে"),
 )
+
+/** Models that think before talking — never picked automatically for conversation. */
+fun isSlowModel(id: String) = "extended-thinking" in id || "thinking" in id
 
 fun modelLabel(id: String): String =
     LIVE_MODELS.firstOrNull { it.id == id }?.label

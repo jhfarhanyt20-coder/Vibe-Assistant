@@ -10,8 +10,8 @@ android {
         applicationId = "com.vibe.assistant"
         minSdk = 29
         targetSdk = 36
-        versionCode = 12
-        versionName = "0.7.4"
+        versionCode = 13
+        versionName = "0.8.0"
     }
 
     buildTypes {

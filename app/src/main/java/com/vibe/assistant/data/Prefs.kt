@@ -194,6 +194,21 @@ object Prefs {
         get() = sp.getBoolean("ask_before_send", false)
         set(v) = sp.edit().putBoolean("ask_before_send", v).apply()
 
+    /** Only the close, loud voice reaches Gemini (far voices / noise become silence). */
+    var nearVoice: Boolean
+        get() = sp.getBoolean("near_voice", true)
+        set(v) = sp.edit().putBoolean("near_voice", v).apply()
+
+    /** Stricter near-voice filter for very noisy places. */
+    var nearVoiceStrong: Boolean
+        get() = sp.getBoolean("near_voice_strong", false)
+        set(v) = sp.edit().putBoolean("near_voice_strong", v).apply()
+
+    /** Which SIM calls go out on: 1, 2, or 0 = whatever the phone asks / its default. */
+    var callSim: Int
+        get() = sp.getInt("call_sim", 0)
+        set(v) = sp.edit().putInt("call_sim", v).apply()
+
     /** Who built Vibe — what it answers to "who made you?". */
     var creatorName: String
         get() = sp.getString("creator_name", "") ?: ""

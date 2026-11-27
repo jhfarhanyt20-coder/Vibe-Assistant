@@ -40,7 +40,7 @@ class ToolRunner(private val ctx: Context, private val host: Host) {
          * the phone is really in the call. "ok…" only once that is seen; otherwise the
          * audio comes back and the reason is returned.
          */
-        suspend fun callAndVerify(number: String): String
+        suspend fun callAndVerify(number: String, sim: Int = 0): String
         /** Same for answering a ringing call. */
         suspend fun answerAndVerify(speaker: Boolean): String
     }
@@ -51,12 +51,12 @@ class ToolRunner(private val ctx: Context, private val host: Host) {
      * Calls after Vibe has said its one line and let go of the audio. Works on the
      * lock screen too: the phone's own call screen comes up over it.
      */
-    private suspend fun callSoon(number: String, name: String): JSONObject {
+    private suspend fun callSoon(number: String, name: String, sim: Int = 0): JSONObject {
         if (!has(android.Manifest.permission.CALL_PHONE)) {
             return err("Calling permission is not granted. Tell the user to allow 'Phone' for Vibe.")
         }
         VibeBus.action("📞 কল: $name")
-        val r = host.callAndVerify(number)
+        val r = host.callAndVerify(number, sim)
         return if (r.startsWith("ok")) {
             VibeBus.action("📞 $name-এর সাথে কল চলছে ✓")
             ok("VERIFIED: the call to $name has started (the phone is in the call now). Vibe goes quiet for the call.")
@@ -176,7 +176,7 @@ class ToolRunner(private val ctx: Context, private val host: Host) {
                 if (PhoneActions.looksLikeNumber(to)) {
                     if (host.isLocked()) return@withContext err("While the phone is locked Vibe only calls saved contacts. Ask the user to unlock, or say the contact's name.")
                     if (Prefs.askBeforeSend && !confirmed) return@withContext ok("needs_confirmation: read the number back digit by digit and ask the user to confirm, then call again with confirmed=true.")
-                    return@withContext callSoon(to, to)
+                    return@withContext callSoon(to, to, a.optInt("sim", 0))
                 }
                 val list = try {
                     PhoneActions.search(ctx, to)
@@ -193,7 +193,7 @@ class ToolRunner(private val ctx: Context, private val host: Host) {
                     }
                     else -> {
                         val c = list.first()
-                        callSoon(c.number, c.name)
+                        callSoon(c.number, c.name, a.optInt("sim", 0))
                     }
                 }
             }

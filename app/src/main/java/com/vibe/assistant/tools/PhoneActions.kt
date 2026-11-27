@@ -87,12 +87,37 @@ object PhoneActions {
         }
     }
 
+    /** The SIMs that can make calls, in slot order, with their names (e.g. "Grameenphone"). */
     @SuppressLint("MissingPermission")
-    fun placeCall(ctx: Context, number: String): String {
-        if (!has(ctx, Manifest.permission.CALL_PHONE)) return "error: কল করার অনুমতি দেওয়া নেই (Vibe অ্যাপ → সেটিংস → অনুমতি)"
+    fun sims(ctx: Context): List<Pair<android.telecom.PhoneAccountHandle, String>> {
+        if (!has(ctx, Manifest.permission.READ_PHONE_STATE)) return emptyList()
         val tm = ctx.getSystemService(TelecomManager::class.java)
         return try {
-            tm.placeCall(Uri.fromParts("tel", cleanNumber(number), null), Bundle())
+            tm.callCapablePhoneAccounts.map { h ->
+                h to (tm.getPhoneAccount(h)?.label?.toString() ?: "SIM")
+            }
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    /**
+     * Places a call. With two SIMs Android normally pops up "which SIM?" and the
+     * call waits there; choosing the SIM up front (the user's [sim]: 1 or 2, else the
+     * one set in Vibe's settings) means no pop-up at all. 0 = let the phone decide.
+     */
+    @SuppressLint("MissingPermission")
+    fun placeCall(ctx: Context, number: String, sim: Int = 0): String {
+        if (!has(ctx, Manifest.permission.CALL_PHONE)) return "error: কল করার অনুমতি দেওয়া নেই (Vibe অ্যাপ → সেটিংস → অনুমতি)"
+        val tm = ctx.getSystemService(TelecomManager::class.java)
+        val extras = Bundle()
+        val want = if (sim > 0) sim else com.vibe.assistant.data.Prefs.callSim
+        val all = sims(ctx)
+        if (want > 0 && all.size >= want) {
+            extras.putParcelable(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, all[want - 1].first)
+        }
+        return try {
+            tm.placeCall(Uri.fromParts("tel", cleanNumber(number), null), extras)
             "ok"
         } catch (e: Exception) {
             "error: ${e.message}"

@@ -42,6 +42,8 @@ class GeminiLiveClient(
     val manualTurns: Boolean = false,
     /** Shorter end-of-speech wait. Off: it cut sentences short; the server default is better. */
     val quickTurns: Boolean = false,
+    /** Less eager to decide that speech started (distant voices, noise). */
+    val calmStart: Boolean = false,
 ) {
     data class ToolCall(val id: String, val name: String, val args: JSONObject)
 
@@ -203,6 +205,16 @@ class GeminiLiveClient(
                         .put("endOfSpeechSensitivity", "END_SENSITIVITY_HIGH")
                         .put("prefixPaddingMs", 150)
                         .put("silenceDurationMs", 550)
+                )
+            )
+        } else if (calmStart) {
+            // Noisy places: don't treat every distant sound as "the user started talking".
+            // Only the START is made less eager; when you stop is still the server's default,
+            // so sentences are never cut short.
+            setup.put(
+                "realtimeInputConfig", JSONObject().put(
+                    "automaticActivityDetection", JSONObject()
+                        .put("startOfSpeechSensitivity", "START_SENSITIVITY_LOW")
                 )
             )
         }

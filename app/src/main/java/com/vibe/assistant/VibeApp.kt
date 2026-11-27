@@ -4,6 +4,7 @@ import android.app.Application
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import com.vibe.assistant.data.Prefs
+import kotlinx.coroutines.launch
 
 class VibeApp : Application() {
     override fun onCreate() {
@@ -28,6 +29,25 @@ class VibeApp : Application() {
             Prefs.pushToTalk = false
             Prefs.bargeIn = true
             sp.edit().putBoolean("v05_talk_reset", true).apply()
+        }
+        // v0.8: Gemini 3.1 Flash Live is legacy; 3.8 Live is Google's low-latency default.
+        // Move to it once (the old ones stay on the list as fallbacks).
+        if (!mig.getBoolean("v080_live38", false)) {
+            val cur = Prefs.model
+            if ("3.1-flash-live" in cur || "2.5-flash-native-audio" in cur) Prefs.model = "models/gemini-3.8-live"
+            Prefs.liveModels = (listOf("models/gemini-3.8-live") + Prefs.liveModels).distinct()
+            mig.edit().putBoolean("v080_live38", true).apply()
+        }
+        // Ask Google which Live models this key really has, so a new one is picked up
+        // and a missing one is never chosen.
+        Prefs.apiKey?.let { key ->
+            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+                val r = com.vibe.assistant.data.KeyChecker.check(key)
+                if (r is com.vibe.assistant.data.KeyChecker.Result.Ok && r.liveModels.isNotEmpty()) {
+                    Prefs.liveModels = r.liveModels
+                    if (Prefs.model !in r.liveModels) Prefs.model = r.liveModels.first()
+                }
+            }
         }
         com.vibe.assistant.wake.VoskModels.warmUp(this)
         val nm = getSystemService(NotificationManager::class.java)

@@ -29,6 +29,7 @@ object ToolSpecs {
             fn("call_contact", "Place a phone call to a contact name or a phone number. Works while locked.",
                 obj("to" to str("Contact name or phone number"),
                     "confirmed" to bool("True if the user already confirmed which person/number"),
+                    "sim" to int("1 or 2 if the user said which SIM to call from; omit otherwise"),
                     required = listOf("to"))),
             fn("answer_call", "Answer the phone call that is ringing right now.",
                 obj("speaker" to bool("Put the call on loudspeaker"))),

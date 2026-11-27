@@ -374,11 +374,12 @@ class VibeService : Service(), GeminiLiveClient.Listener, ToolRunner.Host {
         readyAt = 0L
         keyInUrl = false
         useSearch = Prefs.googleSearch
-        useQuick = false
+        useQuick = true // now only "calm start" (see connect); never the old early cut-off
         waitingForNet = false
         triedModels.clear()
         resumeHandle = null
         bargeIn = Prefs.bargeIn
+        nearGate = if (Prefs.nearVoice) com.vibe.assistant.audio.NearVoiceGate(Prefs.nearVoiceStrong) else null
         held = false
         pttStartedEarly = false
         pttEndedEarly = false
@@ -468,6 +469,8 @@ class VibeService : Service(), GeminiLiveClient.Listener, ToolRunner.Host {
             googleSearch = !talkOnly && useSearch,
             manualTurns = manual,
             quickTurns = false,
+            // Dropped automatically (useQuick=false) if the server ever refuses the setting.
+            calmStart = useQuick && Prefs.nearVoice && !manual,
         ).also { it.connect() }
     }
 
@@ -506,17 +509,22 @@ class VibeService : Service(), GeminiLiveClient.Listener, ToolRunner.Host {
                 loudChunks = 0
             }
         }
+        // Only the close voice: far voices / room noise go out as silence.
+        // (Push-to-talk already sends only what you hold for, so it skips this.)
+        val out: List<ByteArray> = nearGate?.takeIf { !manual }?.process(chunk, now) ?: listOf(chunk)
         val c = client
         synchronized(pending) {
             if (ready && c != null) {
                 while (pending.isNotEmpty()) c.sendAudio(pending.removeFirst())
-                c.sendAudio(chunk)
+                for (o in out) c.sendAudio(o)
             } else {
-                pending.addLast(chunk)
+                for (o in out) pending.addLast(o)
                 while (pending.size > 160) pending.removeFirst() // keep the last ~8 s
             }
         }
     }
+
+    @Volatile private var nearGate: com.vibe.assistant.audio.NearVoiceGate? = null
 
     /** Ends the automatic push-to-talk turn after "Hey Vibe" once you stop talking. */
     private fun trackWakeTurn(now: Long) {
@@ -1085,15 +1093,17 @@ class VibeService : Service(), GeminiLiveClient.Listener, ToolRunner.Host {
                 val acc = VibeAccessibility.instance ?: break
                 val now = SystemClock.elapsedRealtime()
                 val changed = acc.lastEventAt != lastSeenEvent
-                // A frame when the screen changed (at most every ~1.5 s), and every 5 s anyway.
-                if ((changed && now - lastSent > 1400) || now - lastSent > 5000) {
+                // Google's Live guidance: at most 1 frame per second, ~768 px. A frame as soon
+                // as the screen changes (pop-ups included — the screenshot shows every window),
+                // and one every 4 s anyway so a still screen stays known.
+                if ((changed && now - lastSent >= 1000) || now - lastSent > 4000) {
                     val pkg = acc.rootInActiveWindow?.packageName?.toString().orEmpty()
                     val blocked = com.vibe.assistant.agent.PhoneAgent(this@VibeService).isBlocked(pkg)
                     if (blocked) {
                         if (!lastBlocked) client?.sendText("[SCREEN] The user opened a private app ($pkg); screen frames are paused for safety.")
                     } else {
                         lastSeenEvent = acc.lastEventAt
-                        acc.shot(1024, 70)?.let { client?.sendImage(it.b64) }
+                        acc.shot(768, 75)?.let { client?.sendImage(it.b64) }
                     }
                     lastBlocked = blocked
                     lastSent = SystemClock.elapsedRealtime()
@@ -1143,16 +1153,20 @@ class VibeService : Service(), GeminiLiveClient.Listener, ToolRunner.Host {
         }, 700)
     }
 
-    override suspend fun callAndVerify(number: String): String = withContext(Dispatchers.Main) {
+    override suspend fun callAndVerify(number: String, sim: Int): String = withContext(Dispatchers.Main) {
         pausedForCall = true
         pauseAudio()
-        var r = PhoneActions.placeCall(this@VibeService, number)
+        var r = PhoneActions.placeCall(this@VibeService, number, sim)
+        // A "which SIM?" (or any other) pop-up holding the call: answer it on screen.
+        if (r == "ok" && !waitForCall(3000)) {
+            if (answerCallPopup(sim)) waitForCall(6000)
+        }
         // Some phones refuse to start a call from the lock screen: unlock (if allowed) and try once more.
-        if (r == "ok" && !waitForCall(8000) && isLocked() && canSelfUnlock()) {
+        if (r == "ok" && !inCall && isLocked() && canSelfUnlock()) {
             VibeBus.event("লক থাকায় কল যায়নি — আনলক করে আবার চেষ্টা")
             if (ensureUnlocked()) {
-                r = PhoneActions.placeCall(this@VibeService, number)
-                if (r == "ok") waitForCall(8000)
+                r = PhoneActions.placeCall(this@VibeService, number, sim)
+                if (r == "ok" && !waitForCall(3000) && answerCallPopup(sim)) waitForCall(6000)
             }
         }
         if (r == "ok" && inCall) {
@@ -1166,6 +1180,45 @@ class VibeService : Service(), GeminiLiveClient.Listener, ToolRunner.Host {
             else "error: the phone did not go into a call within 8 seconds" +
                 (if (isLocked()) " (the phone is locked — ask the user to unlock, or turn on self-unlock in Vibe settings)" else "")
         }
+    }
+
+    /**
+     * The call didn't start: look at the screen like a person would. Usually it is
+     * the dual-SIM "Call with…" chooser — tap the wanted SIM (asked for, else the one
+     * in settings, else SIM 1). Any other pop-up gets its OK / Call button pressed.
+     */
+    private suspend fun answerCallPopup(sim: Int): Boolean = withContext(Dispatchers.Default) {
+        val acc = VibeAccessibility.instance ?: return@withContext false
+        val want = when {
+            sim > 0 -> sim
+            Prefs.callSim > 0 -> Prefs.callSim
+            else -> 1
+        }
+        val names = PhoneActions.sims(this@VibeService).map { it.second }
+        val candidates = buildList {
+            names.getOrNull(want - 1)?.let { add(it) }   // e.g. "Grameenphone"
+            add("SIM $want"); add("SIM$want"); add("Sim $want"); add("সিম $want")
+            add(if (want == 1) "SIM 1" else "SIM 2")
+        }
+        for (c in candidates) {
+            val n = acc.findByName(c) ?: continue
+            if (acc.tap(n)) {
+                VibeBus.event("SIM বাছার pop-up — $c চাপলাম")
+                return@withContext true
+            }
+        }
+        // Not a SIM chooser: confirm whatever is asking (Call / OK / Continue).
+        for (c in listOf("Call", "কল", "OK", "ঠিক আছে", "Continue", "চালিয়ে যাও")) {
+            val n = acc.findByName(c) ?: continue
+            if (n.isClickable || n.parent?.isClickable == true) {
+                if (acc.tap(n)) {
+                    VibeBus.event("কলের pop-up — \"$c\" চাপলাম")
+                    return@withContext true
+                }
+            }
+        }
+        VibeBus.event("কল আটকে আছে, কিন্তু কোনো চেনা pop-up পাওয়া যায়নি")
+        false
     }
 
     override suspend fun answerAndVerify(speaker: Boolean): String = withContext(Dispatchers.Main) {

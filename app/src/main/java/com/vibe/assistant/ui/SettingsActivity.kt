@@ -124,6 +124,23 @@ class SettingsActivity : ComponentActivity() {
             ) { Prefs.pttVolumeKey = it })
             addView(divider())
             addView(switchRow(
+                "শুধু কাছের কণ্ঠ",
+                "ফোনের কাছে যে জোরে কথা বলছে শুধু তার কথাই Gemini-তে যাবে। দূরের কথা, টিভি, রাস্তার আওয়াজ যাবে না — শব্দওয়ালা জায়গায় বোঝা আর দ্রুত উত্তর দুটোই ভালো হয়।",
+                { Prefs.nearVoice }
+            ) { Prefs.nearVoice = it })
+            addView(label("কতটা কড়া", 14f, VC.SUB, VC.medium), lp().margins(t = dp(8)))
+            addView(choiceRow(listOf(0 to "সাধারণ", 1 to "কড়া (খুব শব্দে)"), { if (Prefs.nearVoiceStrong) 1 else 0 }) {
+                Prefs.nearVoiceStrong = it == 1
+            }, lp().margins(t = dp(6)))
+            addView(divider())
+            addView(label("কল কোন SIM দিয়ে যাবে", 15.5f, VC.TEXT, VC.medium))
+            addView(label("দুই SIM থাকলে আগে থেকে ঠিক করে দিলে “কোন SIM?” pop-up আর আসবে না। মুখে “SIM 2 দিয়ে কল দাও” বললেও হবে।",
+                12.5f, VC.FAINT), lp().margins(t = dp(2)))
+            addView(choiceRow(listOf(0 to "ফোন যা বলে", 1 to "SIM 1", 2 to "SIM 2"), { Prefs.callSim }) {
+                Prefs.callSim = it
+            }, lp().margins(t = dp(8)))
+            addView(divider())
+            addView(switchRow(
                 "পাঠানোর আগে জিজ্ঞেস করবে",
                 "চালু করলে SMS / WhatsApp / voice message পাঠানোর আগে Vibe পড়ে শোনাবে আর “পাঠাবো?” জিজ্ঞেস করবে। বন্ধ থাকলে বললেই সরাসরি পাঠিয়ে দেবে।",
                 { Prefs.askBeforeSend }

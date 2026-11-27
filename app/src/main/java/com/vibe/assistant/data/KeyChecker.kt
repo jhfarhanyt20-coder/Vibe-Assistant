@@ -64,10 +64,14 @@ object KeyChecker {
         Result.Ok(orderModels(found))
     }
 
-    /** Known good models first (in our order), then anything new the key offers. */
-    private fun orderModels(found: List<String>): List<String> {
+    /**
+     * Known good models first (in our order), then anything new the key offers —
+     * newer versions before older — and models that "think" before talking last.
+     */
+    fun orderModels(found: List<String>): List<String> {
         if (found.isEmpty()) return LIVE_MODELS.map { it.id }
         val known = LIVE_MODELS.map { it.id }.filter { it in found }
-        return known + found.filter { it !in known }.sorted()
+        val others = found.filter { it !in known }.sortedDescending()
+        return (known + others).sortedBy { if (isSlowModel(it)) 1 else 0 }
     }
 }
