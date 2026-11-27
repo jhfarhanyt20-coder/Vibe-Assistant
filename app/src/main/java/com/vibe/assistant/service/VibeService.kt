@@ -30,6 +30,7 @@ import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import com.vibe.assistant.R
 import com.vibe.assistant.VibeApp
+import com.vibe.assistant.access.ScreenProjector
 import com.vibe.assistant.access.VibeAccessibility
 import com.vibe.assistant.audio.AudioRoute
 import com.vibe.assistant.audio.Mic
@@ -87,6 +88,8 @@ class VibeService : Service(), GeminiLiveClient.Listener, ToolRunner.Host {
         const val A_PTT_DOWN = "com.vibe.assistant.PTT_DOWN"
         const val A_PTT_UP = "com.vibe.assistant.PTT_UP"
         const val A_STOP_TASK = "com.vibe.assistant.STOP_TASK"
+        const val A_PROJECTION_READY = "com.vibe.assistant.PROJECTION_READY"
+        const val A_PROJECTION_DENIED = "com.vibe.assistant.PROJECTION_DENIED"
 
         private const val NOTIF_ID = 1
         private const val LOCK_NOTIF_ID = 2
@@ -229,6 +232,11 @@ class VibeService : Service(), GeminiLiveClient.Listener, ToolRunner.Host {
             A_PTT_DOWN -> pttDown()
             A_PTT_UP -> pttUp()
             A_STOP_TASK -> stopScreenTasks()
+            A_PROJECTION_READY -> projectionWait?.complete(true)
+            A_PROJECTION_DENIED -> {
+                projectionWait?.complete(false)
+                VibeBus.event("স্ক্রিন দেখার অনুমতি দেওয়া হয়নি")
+            }
             A_QUIT -> {
                 quit()
                 return START_NOT_STICKY
@@ -470,14 +478,22 @@ class VibeService : Service(), GeminiLiveClient.Listener, ToolRunner.Host {
             manualTurns = manual,
             quickTurns = false,
             // Dropped automatically (useQuick=false) if the server ever refuses the setting.
-            calmStart = useQuick && Prefs.nearVoice && !manual,
+            calmStart = useQuick && Prefs.nearVoice && Prefs.nearVoiceStrong && !manual,
         ).also { it.connect() }
     }
 
     /** Mic thread. */
+    /** When the user's voice was last heard (for measuring how fast Vibe answers). */
+    @Volatile private var lastVoiceAt = 0L
+    @Volatile private var measuring = false
+
     private fun onMic(chunk: ByteArray) {
         val now = SystemClock.elapsedRealtime()
         if (VibeBus.micLevel > 0.2f) lastActivity = now
+        if (VibeBus.micLevel > 0.12f && speaker?.isSpeaking() != true) {
+            lastVoiceAt = now
+            measuring = true
+        }
 
         if (manual) {
             gate?.let {
@@ -703,6 +719,12 @@ class VibeService : Service(), GeminiLiveClient.Listener, ToolRunner.Host {
         if (dropReply) return
         speaker?.enqueue(pcm)
         lastActivity = SystemClock.elapsedRealtime()
+        if (measuring) {
+            // First sound of a reply: how long after the user stopped talking did it start?
+            measuring = false
+            val ms = lastActivity - lastVoiceAt
+            if (ms in 0..30_000) VibeBus.event("উত্তর শুরু: তুমি থামার $ms ms পরে (${c.model.removePrefix("models/")})")
+        }
         if (VibeBus.state.value != VState.SPEAKING) {
             main.post { if (inConversation && c === client && !held) VibeBus.setState(VState.SPEAKING) }
         }
@@ -1073,42 +1095,106 @@ class VibeService : Service(), GeminiLiveClient.Listener, ToolRunner.Host {
 
     private var shareJob: Job? = null
 
-    override fun setScreenShare(on: Boolean): String? {
+    // ── Screen capture by MediaProjection (any Android; how the Gemini app shares) ──
+
+    @Volatile private var projectionWait: kotlinx.coroutines.CompletableDeferred<Boolean>? = null
+
+    /** Accessibility screenshots exist only on Android 11+; otherwise Vibe uses MediaProjection. */
+    private fun accessibilityShots() = Build.VERSION.SDK_INT >= 30 && VibeAccessibility.instance != null
+
+    /**
+     * Makes sure Vibe can capture the screen: on Android 11+ with screen control
+     * that is already true; otherwise it asks Android's "Start now?" once and starts
+     * mirroring. False if the user said no.
+     */
+    override suspend fun ensureScreenCapture(): Boolean {
+        if (accessibilityShots() || ScreenProjector.active) return true
+        if (!ScreenProjector.hasConsent()) {
+            val wait = kotlinx.coroutines.CompletableDeferred<Boolean>()
+            projectionWait = wait
+            withContext(Dispatchers.Main) {
+                VibeBus.action("📱 স্ক্রিন দেখার অনুমতি দাও — “Start now / এখনই শুরু করুন” চাপো")
+                DeviceActions.launch(this@VibeService, Intent(this@VibeService, com.vibe.assistant.ui.ProjectionActivity::class.java))
+            }
+            val ok = kotlinx.coroutines.withTimeoutOrNull(45_000) { wait.await() } ?: false
+            projectionWait = null
+            if (!ok) return false
+        }
+        return withContext(Dispatchers.Main) { startProjection() }
+    }
+
+    /** The capture needs the service to be a foreground "media projection" service (Android 10+). */
+    private fun startProjection(): Boolean {
+        if (ScreenProjector.active) return true
+        if (Build.VERSION.SDK_INT >= 29) {
+            try {
+                // Android 10 knows only the media-projection type; 11+ also needs "microphone".
+                ServiceCompat.startForeground(
+                    this, NOTIF_ID, buildNotification(),
+                    if (Build.VERSION.SDK_INT >= 30)
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+                    else ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+                )
+            } catch (e: Exception) {
+                Log.w(TAG, "projection foreground type refused", e)
+            }
+        }
+        val ok = ScreenProjector.start(this)
+        VibeBus.event(if (ok) "স্ক্রিন দেখা চালু (MediaProjection)" else "স্ক্রিন দেখা চালু করা গেল না")
+        return ok
+    }
+
+    private fun stopProjection() {
+        if (!ScreenProjector.active) return
+        ScreenProjector.stop()
+        if (Build.VERSION.SDK_INT >= 30 && fgStarted) {
+            try {
+                ServiceCompat.startForeground(this, NOTIF_ID, buildNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+            } catch (_: Exception) {}
+        }
+    }
+
+    /** One frame for Gemini, from whichever capture this phone has. */
+    private suspend fun grabFrame(maxSide: Int, quality: Int): VibeAccessibility.Shot? =
+        if (accessibilityShots()) VibeAccessibility.instance?.shot(maxSide, quality)
+        else ScreenProjector.shot(maxSide, quality)
+
+    override suspend fun setScreenShare(on: Boolean): String? {
         if (!on) {
             stopScreenShare()
             return null
         }
-        if (Build.VERSION.SDK_INT < 30) return "Live screen sharing needs Android 11 or newer."
-        if (VibeAccessibility.instance == null) return "Screen control (Accessibility) is off, so Vibe cannot see the screen."
+        if (!ensureScreenCapture()) return "The user did not allow screen sharing (Android's \"Start now\" was not pressed)."
         if (shareJob?.isActive == true) return null
         VibeBus.screenSharing.value = true
         shareJob = scope.launch {
             val started = SystemClock.elapsedRealtime()
             var lastSent = 0L
-            var lastSeenEvent = -1L
+            var lastSeen = -1L
             var lastBlocked = false
             while (inConversation && VibeBus.screenSharing.value &&
                 SystemClock.elapsedRealtime() - started < 10 * 60_000L
             ) {
-                val acc = VibeAccessibility.instance ?: break
+                val acc = VibeAccessibility.instance
                 val now = SystemClock.elapsedRealtime()
-                val changed = acc.lastEventAt != lastSeenEvent
+                val marker = if (accessibilityShots()) acc?.lastEventAt ?: 0L else ScreenProjector.frameAt
+                val changed = marker != lastSeen
                 // Google's Live guidance: at most 1 frame per second, ~768 px. A frame as soon
-                // as the screen changes (pop-ups included — the screenshot shows every window),
+                // as the screen changes (pop-ups included — the capture shows every window),
                 // and one every 4 s anyway so a still screen stays known.
                 if ((changed && now - lastSent >= 1000) || now - lastSent > 4000) {
-                    val pkg = acc.rootInActiveWindow?.packageName?.toString().orEmpty()
-                    val blocked = com.vibe.assistant.agent.PhoneAgent(this@VibeService).isBlocked(pkg)
+                    val pkg = acc?.rootInActiveWindow?.packageName?.toString().orEmpty()
+                    val blocked = pkg.isNotEmpty() && com.vibe.assistant.agent.PhoneAgent(this@VibeService).isBlocked(pkg)
                     if (blocked) {
                         if (!lastBlocked) client?.sendText("[SCREEN] The user opened a private app ($pkg); screen frames are paused for safety.")
                     } else {
-                        lastSeenEvent = acc.lastEventAt
-                        acc.shot(768, 75)?.let { client?.sendImage(it.b64) }
+                        lastSeen = marker
+                        grabFrame(768, 75)?.let { client?.sendImage(it.b64) }
                     }
                     lastBlocked = blocked
                     lastSent = SystemClock.elapsedRealtime()
                 }
-                delay(400)
+                delay(300)
             }
             VibeBus.screenSharing.value = false
         }
@@ -1119,6 +1205,7 @@ class VibeService : Service(), GeminiLiveClient.Listener, ToolRunner.Host {
         shareJob?.cancel()
         shareJob = null
         VibeBus.screenSharing.value = false
+        if (!accessibilityShots()) stopProjection()
     }
 
     // ── Calls with proof ─────────────────────────────────────────────────────

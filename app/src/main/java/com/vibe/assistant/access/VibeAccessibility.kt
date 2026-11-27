@@ -583,7 +583,8 @@ class VibeAccessibility : AccessibilityService() {
      * screenshot a second, so a too-soon request waits and tries once more.
      */
     suspend fun shot(maxSide: Int = 1280, quality: Int = 80): Shot? {
-        if (Build.VERSION.SDK_INT < 30) return null
+        // Android 8-10 have no accessibility screenshot: use the screen mirror (MediaProjection).
+        if (Build.VERSION.SDK_INT < 30) return ScreenProjector.shot(maxSide, quality)
         var bmp = grab()
         if (bmp == null) {
             delay(1100)
@@ -599,6 +600,8 @@ class VibeAccessibility : AccessibilityService() {
         return Shot(Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP), w, h)
     }
 
+    /** Android 11+ only — [shot] uses the screen mirror below that. */
+    @androidx.annotation.RequiresApi(30)
     private suspend fun grab(): Bitmap? = suspendCancellableCoroutine { cont ->
         try {
             takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor, object : TakeScreenshotCallback {

@@ -32,7 +32,9 @@ class ToolRunner(private val ctx: Context, private val host: Host) {
          */
         fun releaseAudioThen(action: () -> Unit)
         /** Starts / stops streaming the screen into the conversation. Null if it went fine, else why not. */
-        fun setScreenShare(on: Boolean): String?
+        suspend fun setScreenShare(on: Boolean): String?
+        /** Screen capture available (asks Android's "Start now" once on phones without accessibility screenshots). */
+        suspend fun ensureScreenCapture(): Boolean
         /** Shows a tap-to-choose card of contacts; a pick is told to Gemini as a [CHOICE] note. */
         fun showContactChoices(contacts: List<PhoneActions.Contact>)
         /**
@@ -136,6 +138,8 @@ class ToolRunner(private val ctx: Context, private val host: Host) {
         if (VibeAccessibility.instance == null) {
             return err("NOT DONE. Screen control (Accessibility) is off, so Vibe could not finish it. Ask the user to turn it on.")
         }
+        // Android 8-10: screenshots come from the screen mirror; ask once (works without it too, text only).
+        if (android.os.Build.VERSION.SDK_INT < 30) host.ensureScreenCapture()
         var last = ""
         for (round in 1..5) {
             VibeBus.status.value = if (round == 1) "স্ক্রিন দেখে দেখে করছি…" else "আবার চেষ্টা করছি ($round)…"
@@ -342,6 +346,7 @@ class ToolRunner(private val ctx: Context, private val host: Host) {
                 unlocked()?.let { return@withContext it }
                 val acc = VibeAccessibility.instance
                     ?: return@withContext err("Screen control (Accessibility) is off. Ask the user to turn on Vibe in Accessibility settings.")
+                if (android.os.Build.VERSION.SDK_INT < 30) host.ensureScreenCapture() // pictures on Android 8-10
                 val pkg = acc.rootInActiveWindow?.packageName?.toString().orEmpty()
                 if (agent.isBlocked(pkg)) return@withContext err("For safety Vibe does not touch this app ($pkg).")
                 val done: String = when (name) {
@@ -391,11 +396,16 @@ class ToolRunner(private val ctx: Context, private val host: Host) {
 
             "look_at_screen" -> {
                 unlocked()?.let { return@withContext it }
-                val acc = VibeAccessibility.instance ?: return@withContext err("Screen control is off, so Vibe cannot see the screen.")
-                val pkg = acc.rootInActiveWindow?.packageName?.toString().orEmpty()
-                if (agent.isBlocked(pkg)) return@withContext err("For safety Vibe does not look at this app ($pkg).")
-                val jpg = acc.screenshotJpeg()
-                    ?: return@withContext ok("Screenshots need Android 11+. Text on screen:\n" + acc.dump(100).text.take(4000))
+                val acc = VibeAccessibility.instance
+                val pkg = acc?.rootInActiveWindow?.packageName?.toString().orEmpty()
+                if (pkg.isNotEmpty() && agent.isBlocked(pkg)) return@withContext err("For safety Vibe does not look at this app ($pkg).")
+                // Android 11+: accessibility screenshot. Older phones (or screen control off): the
+                // screen mirror the Gemini app uses, after the user's one-time "Start now".
+                if (!host.ensureScreenCapture()) return@withContext err("The user did not allow Vibe to see the screen (\"Start now\" was not pressed).")
+                kotlinx.coroutines.delay(if (acc == null || android.os.Build.VERSION.SDK_INT < 30) 600 else 0)
+                val jpg = (acc?.shot(1280, 80) ?: com.vibe.assistant.access.ScreenProjector.shot(1280, 80))?.b64
+                    ?: return@withContext if (acc != null) ok("Could not capture the screen. Text on screen:\n" + acc.dump(100).text.take(4000))
+                        else err("Could not capture the screen.")
                 if (!host.sendImageToLive(jpg)) return@withContext err("Could not send the picture.")
                 VibeBus.action("👀 স্ক্রিন দেখছি")
                 ok("A screenshot of the current screen ($pkg) was just sent to you as an image. Look at it and answer the user. " +

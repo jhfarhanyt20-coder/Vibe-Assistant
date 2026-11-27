@@ -291,6 +291,9 @@ class MainActivity : ComponentActivity() {
         refreshChecklist()
     }
 
+    // Called once per home screen build (also from onResume on first show); the previous
+    // collector is cancelled first, so collectors never pile up.
+    @android.annotation.SuppressLint("RepeatOnLifecycleWrongUsage")
     private fun observe() {
         homeJob?.cancel()
         homeJob = lifecycleScope.launch {

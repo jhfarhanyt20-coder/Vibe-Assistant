@@ -20,8 +20,10 @@ import kotlin.math.sqrt
  * Pure Kotlin, no Android — tested on the PC.
  */
 class NearVoiceGate(strong: Boolean = false) {
-    private val ratio = if (strong) 4.0f else 2.6f
-    private val minRms = if (strong) 900f else 550f
+    // Gentle by default: the phone's own noise suppressor already lowers the voice a
+    // lot, so a fixed loudness bar shut out the user's own (normal) speech in v0.8.0.
+    private val ratio = if (strong) 3.2f else 1.8f
+    private val minRms = if (strong) 450f else 160f
     private val hangMs = 500L
     private val prerollChunks = 5
 

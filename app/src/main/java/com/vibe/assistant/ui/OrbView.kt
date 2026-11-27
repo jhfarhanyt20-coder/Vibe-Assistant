@@ -1,7 +1,6 @@
 package com.vibe.assistant.ui
 
 import android.content.Context
-import android.graphics.BlendMode
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
@@ -23,7 +22,10 @@ import kotlin.math.sin
  * Idle states redraw at ~15 fps so the always-on bubble costs almost no battery.
  */
 class OrbView(context: Context, private val compact: Boolean = false) : View(context) {
-    private val blob = Paint(Paint.ANTI_ALIAS_FLAG).apply { blendMode = BlendMode.SCREEN }
+    // "Screen" blending; the PorterDuff form works on every Android version (BlendMode needs 10+).
+    private val blob = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.SCREEN)
+    }
     private val glow = Paint(Paint.ANTI_ALIAS_FLAG)
     private val core = Paint(Paint.ANTI_ALIAS_FLAG)
     private val ring = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }

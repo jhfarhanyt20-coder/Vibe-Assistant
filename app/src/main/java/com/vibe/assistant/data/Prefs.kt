@@ -196,8 +196,8 @@ object Prefs {
 
     /** Only the close, loud voice reaches Gemini (far voices / noise become silence). */
     var nearVoice: Boolean
-        get() = sp.getBoolean("near_voice", true)
-        set(v) = sp.edit().putBoolean("near_voice", v).apply()
+        get() = sp.getBoolean("near_voice2", false) // off by default: in v0.8.0 it also muted the user
+        set(v) = sp.edit().putBoolean("near_voice2", v).apply()
 
     /** Stricter near-voice filter for very noisy places. */
     var nearVoiceStrong: Boolean

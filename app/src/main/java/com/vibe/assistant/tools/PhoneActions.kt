@@ -154,6 +154,7 @@ object PhoneActions {
     @Suppress("DEPRECATION")
     fun hangUp(ctx: Context): String {
         if (!has(ctx, Manifest.permission.ANSWER_PHONE_CALLS)) return "error: কল কাটার অনুমতি দেওয়া নেই"
+        if (Build.VERSION.SDK_INT < 28) return "error: Android 8-এ অ্যাপ কল কাটতে পারে না — ফোনের লাল বাটন চাপতে হবে"
         val tm = ctx.getSystemService(TelecomManager::class.java)
         return try {
             if (tm.endCall()) "ok" else "error: কোনো কল চলছে না"
