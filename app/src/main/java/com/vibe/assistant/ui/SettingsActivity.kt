@@ -11,6 +11,8 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.widget.ArrayAdapter
+import android.widget.AutoCompleteTextView
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageView
@@ -25,6 +27,8 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import com.vibe.assistant.R
+import com.vibe.assistant.agent.GeminiText
+import com.vibe.assistant.agent.OpenAiCompat
 import com.vibe.assistant.core.Memory
 import com.vibe.assistant.core.VState
 import com.vibe.assistant.core.VibeBus
@@ -53,6 +57,9 @@ class SettingsActivity : ComponentActivity() {
     private val filterChips = mutableListOf<Pair<Boolean?, TextView>>()
     private val switches = mutableListOf<Pair<Switch, () -> Boolean>>()
     private var showAllMemory = false
+    private lateinit var agentKeyText: TextView
+    private lateinit var agentModelField: AutoCompleteTextView
+    private lateinit var agentStatus: TextView
 
     private val phoneLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { renderPermissions() }
@@ -283,6 +290,54 @@ class SettingsActivity : ComponentActivity() {
             addView(row, lp().margins(t = dp(10)))
         })
 
+        // ── Screen-task AI ──
+        col.addView(section("কাজের AI (স্ক্রিন দেখে কাজ)"))
+        col.addView(card().apply {
+            addView(label("কথা বলবে Gemini Live; স্ক্রিনশট দেখে দেখে ট্যাপ-টাইপের কাজ করবে এই AI। " +
+                "যেকোনো OpenAI-compatible প্রোভাইডার, যার মডেল ছবি বোঝে। খালি রাখলে Gemini-ই করবে।", 12.5f, VC.FAINT))
+            addView(switchRow("এই AI দিয়ে কাজ করাও", "বন্ধ করলে আবার Gemini দিয়ে কাজ হবে",
+                { Prefs.agentCustomOn }) { Prefs.agentCustomOn = it; renderAgent() }, lp().margins(t = dp(10)))
+            addView(label("Base URL", 14f, VC.SUB, VC.medium), lp().margins(t = dp(14)))
+            addView(textField(Prefs.agentBaseUrl, "https://apihub.agnes-ai.com/v1") {
+                Prefs.agentBaseUrl = it
+                renderAgent()
+            }, lp().margins(t = dp(6)))
+            addView(label("API key", 14f, VC.SUB, VC.medium), lp().margins(t = dp(14)))
+            agentKeyText = label("", 15f, VC.TEXT, Typeface.MONOSPACE)
+            addView(agentKeyText, lp().margins(t = dp(4)))
+            addView(smallButton("key দাও / বদলাও") { changeAgentKey() },
+                lp(ViewGroup.LayoutParams.WRAP_CONTENT).margins(t = dp(6)))
+            addView(label("মডেল", 14f, VC.SUB, VC.medium), lp().margins(t = dp(14)))
+            agentModelField = AutoCompleteTextView(context).apply {
+                setText(Prefs.agentModelName)
+                hint = "মডেলের নাম লেখো, বা নিচে 'মডেল আনো'"
+                setHintTextColor(VC.FAINT)
+                setTextColor(VC.TEXT)
+                textSize = 16f
+                isSingleLine = true
+                threshold = 1
+                background = rounded(0xFF0E0E1C.toInt(), dpf(14f), VC.STROKE, dp(1))
+                setDropDownBackgroundDrawable(rounded(VC.CARD, dpf(14f), VC.STROKE, dp(1)))
+                setPadding(dp(14), dp(12), dp(14), dp(12))
+                addTextChangedListener(object : TextWatcher {
+                    override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                    override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+                    override fun afterTextChanged(s: Editable?) {
+                        Prefs.agentModelName = s?.toString().orEmpty()
+                        renderAgent()
+                    }
+                })
+            }
+            addView(agentModelField, lp().margins(t = dp(6)))
+            val row = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
+            row.addView(secondaryButton("মডেল আনো") { fetchAgentModels() }, lp(0).apply { weight = 1f }.margins(r = dp(6)))
+            row.addView(secondaryButton("পরীক্ষা করো") { testAgent() }, lp(0).apply { weight = 1f }.margins(l = dp(6)))
+            addView(row, lp().margins(t = dp(12)))
+            agentStatus = label("", 13f, VC.SUB)
+            addView(agentStatus, lp().margins(t = dp(10)))
+        })
+        renderAgent()
+
         // ── Permissions ──
         col.addView(section("অনুমতি"))
         permList = card()
@@ -408,6 +463,120 @@ class SettingsActivity : ComponentActivity() {
             }
         }
         dlg.show()
+    }
+
+    // ── Screen-task AI ───────────────────────────────────────────────────────
+
+    private fun renderAgent() {
+        if (!::agentStatus.isInitialized) return
+        val k = Prefs.agentKey.orEmpty()
+        agentKeyText.text = when {
+            k.isEmpty() -> "দেওয়া নেই"
+            k.length > 8 -> k.take(4) + "••••••••" + k.takeLast(4)
+            else -> "••••"
+        }
+        agentStatus.setTextColor(VC.SUB)
+        agentStatus.text = when {
+            !Prefs.agentCustomOn -> "বন্ধ — স্ক্রিনের কাজ Gemini করবে"
+            Prefs.customAgentReady -> "চালু: ${Prefs.agentModelName}"
+            else -> "Base URL, key আর মডেল — তিনটাই দিলে চালু হবে"
+        }
+    }
+
+    private fun changeAgentKey() {
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(8), dp(20), 0)
+        }
+        val (field, input) = keyField()
+        input.hint = "প্রোভাইডারের API key"
+        box.addView(field)
+        val dlg = Flows.dialog(this)
+            .setTitle("কাজের AI-র key")
+            .setView(box)
+            .setPositiveButton("সেভ করো") { _, _ ->
+                Prefs.agentKey = input.text.toString()
+                renderAgent()
+            }
+            .setNeutralButton("মুছে দাও") { _, _ ->
+                Prefs.agentKey = null
+                renderAgent()
+            }
+            .setNegativeButton("বাতিল", null)
+            .create()
+        dlg.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE)
+        dlg.show()
+    }
+
+    private fun agentError(msg: String) {
+        agentStatus.setTextColor(VC.RED)
+        agentStatus.text = msg
+    }
+
+    private fun fetchAgentModels() {
+        val base = Prefs.agentBaseUrl
+        val key = Prefs.agentKey
+        if (base.isBlank() || key.isNullOrBlank()) return agentError("আগে Base URL আর key দাও")
+        agentStatus.setTextColor(VC.SUB)
+        agentStatus.text = "মডেল আনছি…"
+        lifecycleScope.launch {
+            try {
+                val models = OpenAiCompat.listModels(base, key)
+                if (models.isEmpty()) {
+                    agentError("প্রোভাইডার কোনো মডেল জানায়নি — পুরো নাম লিখে দাও")
+                    return@launch
+                }
+                val adapter = object : ArrayAdapter<String>(this@SettingsActivity,
+                    android.R.layout.simple_dropdown_item_1line, models) {
+                    override fun getView(position: Int, convertView: View?, parent: ViewGroup): View =
+                        super.getView(position, convertView, parent).apply {
+                            (this as? TextView)?.setTextColor(VC.TEXT)
+                        }
+                }
+                // ArrayAdapter's filter matches the start of each word: type "g" → gemini-…, gpt-…
+                agentModelField.setAdapter(adapter)
+                agentStatus.setTextColor(VC.GREEN)
+                agentStatus.text = "${models.size}টা মডেল পাওয়া গেছে — নাম লিখতে শুরু করো বা তালিকা থেকে বেছে নাও"
+                agentModelField.requestFocus()
+                agentModelField.showDropDown()
+            } catch (e: Exception) {
+                agentError(e.message ?: "মডেল আনা গেল না")
+            }
+        }
+    }
+
+    /** One small request with a picture: proves the key, the model, and that it sees images. */
+    private fun testAgent() {
+        val base = Prefs.agentBaseUrl
+        val key = Prefs.agentKey
+        val model = Prefs.agentModelName
+        if (base.isBlank() || key.isNullOrBlank() || model.isBlank()) return agentError("Base URL, key আর মডেল দাও")
+        agentStatus.setTextColor(VC.SUB)
+        agentStatus.text = "পরীক্ষা চলছে…"
+        lifecycleScope.launch {
+            val t0 = System.currentTimeMillis()
+            try {
+                val turn = GeminiText.userTurn(
+                    "What colour is this image? Reply only JSON: {\"colour\": \"...\"}", testRedJpeg())
+                val raw = OpenAiCompat.chat(base, key, model, "You answer with JSON only.", listOf(turn))
+                val ms = System.currentTimeMillis() - t0
+                val sees = "red" in raw.lowercase()
+                agentStatus.setTextColor(if (sees) VC.GREEN else VC.SUB)
+                agentStatus.text = if (sees) "কাজ করছে ✓ ছবিও বোঝে — উত্তর $ms ms-এ"
+                else "উত্তর এসেছে ($ms ms), কিন্তু ছবি বুঝল কিনা নিশ্চিত না: ${raw.take(80)}"
+            } catch (e: Exception) {
+                agentError(e.message ?: "কাজ করেনি")
+            }
+        }
+    }
+
+    /** A tiny solid-red JPEG for the "does this model see images?" test. */
+    private fun testRedJpeg(): String {
+        val bmp = android.graphics.Bitmap.createBitmap(32, 32, android.graphics.Bitmap.Config.ARGB_8888)
+        bmp.eraseColor(Color.RED)
+        val out = java.io.ByteArrayOutputStream()
+        bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, out)
+        return android.util.Base64.encodeToString(out.toByteArray(), android.util.Base64.NO_WRAP)
     }
 
     // ── Talk mode & Voice Lock ───────────────────────────────────────────────

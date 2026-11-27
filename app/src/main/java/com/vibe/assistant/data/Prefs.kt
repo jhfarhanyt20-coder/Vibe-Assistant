@@ -219,6 +219,34 @@ object Prefs {
         get() = sp.getString("user_name", "") ?: ""
         set(v) = sp.edit().putString("user_name", v.trim()).apply()
 
+    /** Screen-task AI: an OpenAI-compatible provider's base URL (…/v1). Empty = use Gemini. */
+    var agentBaseUrl: String
+        get() = sp.getString("agent_base_url", "") ?: ""
+        set(v) = sp.edit().putString("agent_base_url", v.trim()).apply()
+
+    /** That provider's key, encrypted like the Gemini key. */
+    var agentKey: String?
+        get() = SecureBox.decrypt(secure.getString("agent_key", null))
+        set(value) {
+            val v = value?.trim()?.takeIf { it.isNotEmpty() }
+            secure.edit().apply {
+                if (v == null) remove("agent_key") else putString("agent_key", SecureBox.encrypt(v))
+            }.apply()
+        }
+
+    /** The model id on that provider (must accept images). */
+    var agentModelName: String
+        get() = sp.getString("agent_model_name", "") ?: ""
+        set(v) = sp.edit().putString("agent_model_name", v.trim()).apply()
+
+    /** Use the custom provider for screen tasks (when it is filled in). */
+    var agentCustomOn: Boolean
+        get() = sp.getBoolean("agent_custom_on", true)
+        set(v) = sp.edit().putBoolean("agent_custom_on", v).apply()
+
+    val customAgentReady: Boolean
+        get() = agentCustomOn && agentBaseUrl.isNotBlank() && agentModelName.isNotBlank() && !agentKey.isNullOrBlank()
+
     /** The text model that last worked for the screen-control agent. */
     var agentModel: String?
         get() = sp.getString("agent_model", null)

@@ -53,7 +53,35 @@ object GeminiText {
      * alternate user / model. Returns the parsed JSON reply and its raw text,
      * which the caller appends as the next model turn.
      */
-    suspend fun chat(system: String, turns: List<JSONObject>): Pair<JSONObject, String> = withContext(Dispatchers.IO) {
+    suspend fun chat(system: String, turns: List<JSONObject>): Pair<JSONObject, String> {
+        // The user's own OpenAI-compatible model does the screen work when it is set up;
+        // Gemini text models stay as the fallback if it fails and a Gemini key exists.
+        if (Prefs.customAgentReady) {
+            try {
+                val raw = OpenAiCompat.chat(Prefs.agentBaseUrl, Prefs.agentKey!!, Prefs.agentModelName, system, turns)
+                return parse(raw)
+            } catch (e: Failure) {
+                if (Prefs.apiKey == null) throw e
+                com.vibe.assistant.core.VibeBus.event("কাজের AI ব্যর্থ (${e.message}) — Gemini দিয়ে চেষ্টা")
+            }
+        }
+        return geminiChat(system, turns)
+    }
+
+    /** Pulls the JSON object out of a model reply (code fences, prose around it). */
+    fun parse(out: String): Pair<JSONObject, String> {
+        val cleaned = out.trim().removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
+        val start = cleaned.indexOf('{')
+        val end = cleaned.lastIndexOf('}')
+        val obj = try {
+            JSONObject(if (start >= 0 && end > start) cleaned.substring(start, end + 1) else cleaned)
+        } catch (e: Exception) {
+            throw Failure("মডেলের উত্তর বোঝা গেল না")
+        }
+        return obj to cleaned
+    }
+
+    private suspend fun geminiChat(system: String, turns: List<JSONObject>): Pair<JSONObject, String> = withContext(Dispatchers.IO) {
         val key = Prefs.apiKey ?: throw Failure("API key নেই")
         val body = JSONObject()
             .put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", system))))
@@ -86,15 +114,7 @@ object GeminiText {
                 ?.let { p -> (0 until p.length()).joinToString("") { p.optJSONObject(it)?.optString("text").orEmpty() } }
                 ?: throw Failure("খালি উত্তর")
             Prefs.agentModel = m
-            val cleaned = out.trim().removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
-            val start = cleaned.indexOf('{')
-            val end = cleaned.lastIndexOf('}')
-            val obj = try {
-                JSONObject(if (start >= 0 && end > start) cleaned.substring(start, end + 1) else cleaned)
-            } catch (e: Exception) {
-                throw Failure("Gemini-র উত্তর বোঝা গেল না")
-            }
-            return@withContext obj to cleaned
+            return@withContext parse(out)
         }
         throw Failure(last)
     }
